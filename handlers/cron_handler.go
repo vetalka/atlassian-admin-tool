@@ -824,6 +824,7 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 	tableRows := ""
 	firstLog := ""
 	firstRunID := int64(0)
+	hasRunning := false
 	for rows.Next() {
 		var run BackupPolicyRun
 		var sizeBytes int64
@@ -874,6 +875,9 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 			firstLog = run.Log
 			firstRunID = run.ID
 		}
+		if run.Status == "running" {
+			hasRunning = true
+		}
 
 		tableRows += fmt.Sprintf(`
 		<tr id="run-row-%d">
@@ -914,6 +918,11 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 	logsJSON, _ := json.Marshal(allLogs)
 	_ = firstRunID
 
+	autoReload := ""
+	if hasRunning {
+		autoReload = `<script>setTimeout(()=>location.reload(),3000)</script>`
+	}
+
 	content := fmt.Sprintf(`
 <div class="ads-page-centered"><div class="ads-page-content">
 	<div class="ads-breadcrumbs">
@@ -948,12 +957,13 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 		<pre id="log-output" style="margin:0;padding:16px 24px;font-size:12px;font-family:monospace;background:var(--color-bg-card);
 		     max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">%s</pre>
 	</div>
-</div></div>`,
+</div></div>%s`,
 		html.EscapeString(policyName),
 		id,
 		tableRows,
 		map[bool]string{true: "block", false: "none"}[firstLog != ""],
 		html.EscapeString(firstLog),
+		template.HTML(autoReload),
 	)
 
 	extraHead := template.HTML(fmt.Sprintf(`<script>
@@ -971,22 +981,18 @@ function showLog(runID) {
     pollLog(runID);
 }
 
-// On page load: if ?live= param present open that run; auto-poll any RUNNING row
+// On page load: open the most recent run's log and start polling it
 document.addEventListener('DOMContentLoaded', function() {
     const params = new URLSearchParams(window.location.search);
     const liveID = params.get('live');
     if (liveID) {
         showLog(parseInt(liveID));
     } else {
-        document.querySelectorAll('tr').forEach(function(row) {
-            if (row.textContent.includes('RUNNING')) {
-                const btn = row.querySelector('button[onclick^="showLog"]');
-                if (btn) {
-                    const m = btn.getAttribute('onclick').match(/showLog\((\d+)\)/);
-                    if (m) showLog(parseInt(m[1]));
-                }
-            }
-        });
+        const firstBtn = document.querySelector('button[onclick^="showLog"]');
+        if (firstBtn) {
+            const m = firstBtn.getAttribute('onclick').match(/showLog\((\d+)\)/);
+            if (m) showLog(parseInt(m[1]));
+        }
     }
 });
 
