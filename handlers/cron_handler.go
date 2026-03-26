@@ -926,14 +926,13 @@ function showLog(runID) {
     pollLog(runID);
 }
 
-// On page load: if ?live= param present open that run; always auto-reload table rows while any run is RUNNING
-(function() {
+// On page load: if ?live= param present open that run; auto-poll any RUNNING row
+document.addEventListener('DOMContentLoaded', function() {
     const params = new URLSearchParams(window.location.search);
     const liveID = params.get('live');
     if (liveID) {
         showLog(parseInt(liveID));
     } else {
-        // Check if any row is RUNNING and kick off polling for it
         document.querySelectorAll('tr').forEach(function(row) {
             if (row.textContent.includes('RUNNING')) {
                 const btn = row.querySelector('button[onclick^="showLog"]');
@@ -944,7 +943,7 @@ function showLog(runID) {
             }
         });
     }
-})();
+});
 
 function statusBadgeHTML(status) {
     const colours = {success:'#00875A', failed:'#DE350B', partial:'#FF991F', running:'#0052CC'};
