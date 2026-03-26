@@ -18,11 +18,29 @@ var (
 // Must be called after InitDB from main.go.
 func InitScheduler() {
 	schedulerOnce.Do(func() {
+		fixStuckRuns()
 		scheduler = cron.New()
 		loadAndScheduleAllPolicies()
 		scheduler.Start()
 		log.Println("Cron backup scheduler started.")
 	})
+}
+
+// fixStuckRuns marks any run that has been in "running" state for more than
+// 2 hours as failed. Called once at startup to recover from crashes.
+func fixStuckRuns() {
+	res, err := db.Exec(`UPDATE backup_policy_runs
+		SET status='failed', finished_at=datetime('now'),
+		    log=log||char(10)||'[SYSTEM] Auto-failed: stuck in running state at startup'
+		WHERE status='running'
+		  AND started_at < datetime('now', '-2 hours')`)
+	if err != nil {
+		log.Printf("fixStuckRuns: %v", err)
+		return
+	}
+	if n, _ := res.RowsAffected(); n > 0 {
+		log.Printf("fixStuckRuns: marked %d stuck run(s) as failed", n)
+	}
 }
 
 // StopScheduler stops the scheduler gracefully. Called on server shutdown.

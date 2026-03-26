@@ -12,19 +12,24 @@ import (
 	"time"
 )
 
-// PolicyCleanupInfo holds a policy + its on-disk run folders.
+// PolicyCleanupInfo holds a policy + its merged disk+DB run list.
 type PolicyCleanupInfo struct {
 	ID                int64
 	Name              string
 	DestinationFolder string
 	TotalSizeBytes    int64
-	Runs              []RunFolder
+	Runs              []RunInfo
 }
 
-// RunFolder is one timestamped backup folder under a policy.
-type RunFolder struct {
-	Name      string
-	SizeBytes int64
+// RunInfo represents one backup run — from disk, DB, or both.
+type RunInfo struct {
+	RunID        int64  // 0 if no DB record
+	Folder       string // timestamp folder name; empty if orphan DB record with no parseable folder
+	SizeBytes    int64
+	Status       string
+	StartedAt    string
+	ExistsOnDisk bool // folder present on disk
+	IsOrphanDB   bool // DB record exists but no folder on disk
 }
 
 func loadPolicyCleanupInfos() []PolicyCleanupInfo {
@@ -40,16 +45,93 @@ func loadPolicyCleanupInfos() []PolicyCleanupInfo {
 		if err := rows.Scan(&p.ID, &p.Name, &p.DestinationFolder); err != nil {
 			continue
 		}
-		entries, _ := listRunFolders(p.DestinationFolder)
-		for _, e := range entries {
-			full := filepath.Join(p.DestinationFolder, e.Name())
-			sz := calculateDirSize(full)
-			p.Runs = append(p.Runs, RunFolder{Name: e.Name(), SizeBytes: sz})
-			p.TotalSizeBytes += sz
+
+		// --- disk folders ---
+		diskFolders := map[string]int64{} // folder→size
+		if entries, err := listRunFolders(p.DestinationFolder); err == nil {
+			for _, e := range entries {
+				full := filepath.Join(p.DestinationFolder, e.Name())
+				diskFolders[e.Name()] = calculateDirSize(full)
+			}
 		}
+
+		// --- DB records ---
+		type dbRun struct {
+			id        int64
+			folder    string // extracted from files_created
+			status    string
+			startedAt string
+		}
+		dbRuns := map[string]dbRun{} // folder→record
+		dbRows, err := db.Query(
+			`SELECT id, status, COALESCE(started_at,''), COALESCE(files_created,'[]')
+			 FROM backup_policy_runs WHERE policy_id=? ORDER BY id DESC`, p.ID)
+		if err == nil {
+			defer dbRows.Close()
+			for dbRows.Next() {
+				var rid int64
+				var status, startedAt, filesJSON string
+				dbRows.Scan(&rid, &status, &startedAt, &filesJSON)
+				// extract folder from any path in files_created
+				folder := extractFolderFromFilesJSON(filesJSON, p.DestinationFolder)
+				dbRuns[folder] = dbRun{id: rid, folder: folder, status: status, startedAt: startedAt}
+			}
+		}
+
+		// --- merge ---
+		seen := map[string]bool{}
+
+		// disk-first: folders on disk (matched or unmatched to DB)
+		for folder, sz := range diskFolders {
+			run := RunInfo{Folder: folder, SizeBytes: sz, ExistsOnDisk: true}
+			if rec, ok := dbRuns[folder]; ok {
+				run.RunID = rec.id
+				run.Status = rec.status
+				run.StartedAt = rec.startedAt
+			}
+			p.Runs = append(p.Runs, run)
+			p.TotalSizeBytes += sz
+			seen[folder] = true
+		}
+
+		// orphan DB records: in DB but no folder on disk
+		for folder, rec := range dbRuns {
+			if seen[folder] {
+				continue
+			}
+			p.Runs = append(p.Runs, RunInfo{
+				RunID:      rec.id,
+				Folder:     folder,
+				Status:     rec.status,
+				StartedAt:  rec.startedAt,
+				IsOrphanDB: true,
+			})
+		}
+
+		// sort newest first by folder name (lexicographic desc = time desc)
+		sortRunInfos(p.Runs)
 		infos = append(infos, p)
 	}
 	return infos
+}
+
+// extractFolderFromFilesJSON finds the timestamp folder name embedded in the
+// files_created JSON array (e.g. ".../2026-03-26_21-37-56/...").
+func extractFolderFromFilesJSON(filesJSON, destFolder string) string {
+	// Look for runFolderRe pattern preceded by a '/'
+	for _, match := range runFolderRe.FindAllString(filesJSON, -1) {
+		return match
+	}
+	return ""
+}
+
+// sortRunInfos sorts runs newest-first by folder name.
+func sortRunInfos(runs []RunInfo) {
+	for i := 1; i < len(runs); i++ {
+		for j := i; j > 0 && runs[j].Folder > runs[j-1].Folder; j-- {
+			runs[j], runs[j-1] = runs[j-1], runs[j]
+		}
+	}
 }
 
 // HandleShowCleanup renders GET /cron/cleanup
@@ -73,7 +155,26 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 			</div>`, p.ID, p.ID)
 		}
 		for _, run := range p.Runs {
-			runsHTML += fmt.Sprintf(`
+			if run.IsOrphanDB {
+				// Orphan: DB record exists but no folder on disk
+				label := run.Folder
+				if label == "" {
+					label = fmt.Sprintf("run #%d", run.RunID)
+				}
+				runsHTML += fmt.Sprintf(`
+			<div class="cleanup-run-row" id="run-%d-%d" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);opacity:0.6;">
+				<input type="checkbox" style="width:16px;height:16px;opacity:0.3;" disabled>
+				<span style="font-size:18px;">&#x26A0;&#xFE0F;</span>
+				<span style="font-family:monospace;font-size:13px;flex:1;font-style:italic;color:var(--color-text-subtle);">%s <span style="font-size:11px;">(files missing from disk)</span></span>
+				<button onclick="deleteRecordOnly(%d,%d,this)" style="padding:3px 10px;font-size:12px;background:#6B778C;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Remove Record</button>
+			</div>`,
+					p.ID, run.RunID,
+					html.EscapeString(label),
+					run.RunID, p.ID,
+				)
+			} else {
+				// Normal: folder exists on disk
+				runsHTML += fmt.Sprintf(`
 			<div class="cleanup-run-row" id="run-%d-%s" data-policy="%d" data-folder="%s" data-size="%d" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);">
 				<input type="checkbox" class="run-cb run-cb-%d" data-size="%d" style="width:16px;height:16px;cursor:pointer;" onchange="updateSelBar(%d)">
 				<span style="font-size:18px;">&#x1F4C1;</span>
@@ -81,13 +182,14 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 				<span style="font-size:12px;color:var(--color-text-subtle);min-width:70px;text-align:right;">%s</span>
 				<button onclick="deleteRun(%d,'%s',this)" style="padding:3px 10px;font-size:12px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete</button>
 			</div>`,
-				p.ID, html.EscapeString(run.Name),
-				p.ID, html.EscapeString(run.Name), run.SizeBytes,
-				p.ID, run.SizeBytes, p.ID,
-				html.EscapeString(run.Name),
-				html.EscapeString(fmtBytesCleanup(run.SizeBytes)),
-				p.ID, html.EscapeString(run.Name),
-			)
+					p.ID, html.EscapeString(run.Folder),
+					p.ID, html.EscapeString(run.Folder), run.SizeBytes,
+					p.ID, run.SizeBytes, p.ID,
+					html.EscapeString(run.Folder),
+					html.EscapeString(fmtBytesCleanup(run.SizeBytes)),
+					p.ID, html.EscapeString(run.Folder),
+				)
+			}
 		}
 		if !hasRuns {
 			runsHTML = `<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>`
@@ -100,7 +202,10 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 				<span style="font-size:18px;margin-right:8px;">&#x1F4C1;</span>
 				<span style="font-weight:600;font-size:15px;">Policy: %s</span>
 			</div>
-			<span style="font-size:13px;color:var(--color-text-subtle);">Total: <strong id="total-size-%d">%s</strong></span>
+			<div style="display:flex;align-items:center;gap:12px;">
+				<span style="font-size:13px;color:var(--color-text-subtle);">Total: <strong id="total-size-%d">%s</strong></span>
+				<button onclick="clearAllRecords(%d)" style="padding:3px 10px;font-size:12px;background:var(--color-border);color:var(--color-text);border:none;border-radius:4px;cursor:pointer;" title="Delete all DB records for this policy (files stay on disk)">&#x1F5D1; Clear All Records</button>
+			</div>
 		</div>
 		<div style="padding:0 24px 8px;">
 			<div style="font-size:12px;color:var(--color-text-subtle);margin-bottom:12px;font-family:monospace;">%s</div>
@@ -123,6 +228,7 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 			p.ID,
 			html.EscapeString(p.Name),
 			p.ID, html.EscapeString(fmtBytesCleanup(p.TotalSizeBytes)),
+			p.ID, // clearAllRecords
 			html.EscapeString(p.DestinationFolder),
 			p.ID, runsHTML,
 			p.ID, p.ID, p.ID, p.ID,
@@ -347,6 +453,45 @@ function checkEmpty(policyID) {
 		if (bar) bar.style.display = 'none';
 	}
 }
+
+function deleteRecordOnly(runID, policyID, btn) {
+	if (!confirm('Remove this DB record? The backup files (if any) are NOT deleted.')) return;
+	btn.disabled = true;
+	fetch('/cron/cleanup/delete-record-only', {
+		method: 'POST',
+		headers: {'Content-Type': 'application/json'},
+		body: JSON.stringify({run_id: runID})
+	}).then(r => r.json()).then(d => {
+		if (d.success) {
+			const row = document.getElementById('run-' + policyID + '-' + runID);
+			if (row) row.remove();
+			showMsg(policyID, '✓ Record removed.', true);
+			checkEmpty(policyID);
+		} else {
+			showMsg(policyID, d.error || 'Failed.', false);
+			btn.disabled = false;
+		}
+	}).catch(() => { showMsg(policyID, 'Failed.', false); btn.disabled = false; });
+}
+
+function clearAllRecords(policyID) {
+	if (!confirm('Delete ALL run records from DB for this policy? Files on disk are NOT deleted.')) return;
+	fetch('/cron/cleanup/clear-all-records', {
+		method: 'POST',
+		headers: {'Content-Type': 'application/json'},
+		body: JSON.stringify({policy_id: policyID})
+	}).then(r => r.json()).then(d => {
+		if (d.success) {
+			// Remove all orphan rows; disk rows stay but lose their run IDs
+			document.querySelectorAll('#runs-' + policyID + ' .cleanup-run-row').forEach(row => {
+				if (row.id.match(/^run-\d+-\d+$/)) row.remove(); // orphan rows have numeric run IDs
+			});
+			showMsg(policyID, '✓ Cleared ' + d.deleted + ' record(s) from DB.', true);
+		} else {
+			showMsg(policyID, d.error || 'Failed.', false);
+		}
+	}).catch(() => showMsg(policyID, 'Failed.', false));
+}
 </script>`, cards)
 
 	RenderPage(w, PageData{
@@ -354,6 +499,13 @@ function checkEmpty(policyID) {
 		IsAdmin: isAdmin,
 		Content: template.HTML(content),
 	})
+}
+
+// deleteRunDBRecord removes the backup_policy_runs record whose files_created
+// contains the given folder name.
+func deleteRunDBRecord(policyID int64, folder string) {
+	db.Exec(`DELETE FROM backup_policy_runs WHERE policy_id=? AND files_created LIKE ?`,
+		policyID, "%/"+folder+"/%")
 }
 
 // HandleCleanupDeleteRun handles POST /cron/cleanup/delete-run
@@ -386,6 +538,7 @@ func HandleCleanupDeleteRun(w http.ResponseWriter, r *http.Request) {
 		jsonErr(w, err.Error())
 		return
 	}
+	deleteRunDBRecord(body.PolicyID, body.Folder)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "freed_bytes": freed})
 }
@@ -423,6 +576,8 @@ func HandleCleanupDeleteAll(w http.ResponseWriter, r *http.Request) {
 		removeAllSafe(full)
 		count++
 	}
+	// Delete all run records for this policy
+	db.Exec("DELETE FROM backup_policy_runs WHERE policy_id=?", body.PolicyID)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "freed_bytes": freed, "count": count})
 }
@@ -466,6 +621,7 @@ func HandleCleanupDeleteOlderThan(w http.ResponseWriter, r *http.Request) {
 			full := filepath.Join(cleanDest, e.Name())
 			freed += calculateDirSize(full)
 			removeAllSafe(full)
+			deleteRunDBRecord(body.PolicyID, e.Name())
 			deletedFolders = append(deletedFolders, e.Name())
 			count++
 		}
@@ -474,7 +630,7 @@ func HandleCleanupDeleteOlderThan(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"success":         true,
 		"freed_bytes":     freed,
-		"count":          count,
+		"count":           count,
 		"deleted_folders": deletedFolders,
 	})
 }
@@ -529,7 +685,7 @@ func HandleCleanupDeleteSelected(w http.ResponseWriter, r *http.Request) {
 	var deleted []string
 	for _, folder := range body.Folders {
 		if !runFolderRe.MatchString(folder) {
-			continue // skip invalid names silently
+			continue
 		}
 		fullPath, err := validateCleanupPath(destFolder, folder)
 		if err != nil {
@@ -537,15 +693,67 @@ func HandleCleanupDeleteSelected(w http.ResponseWriter, r *http.Request) {
 		}
 		freed += calculateDirSize(fullPath)
 		if err := os.RemoveAll(fullPath); err == nil {
+			deleteRunDBRecord(body.PolicyID, folder)
 			deleted = append(deleted, folder)
 		}
 	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"success":    true,
+		"success":     true,
 		"freed_bytes": freed,
-		"deleted":    deleted,
+		"deleted":     deleted,
 	})
+}
+
+// HandleCleanupDeleteRecordOnly handles POST /cron/cleanup/delete-record-only
+// Body: {"run_id": N}  — removes only the DB record, not files on disk.
+func HandleCleanupDeleteRecordOnly(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		RunID int64 `json:"run_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.RunID == 0 {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	// Verify the run exists (security: confirm it's a real record)
+	var policyID int64
+	if err := db.QueryRow("SELECT policy_id FROM backup_policy_runs WHERE id=?", body.RunID).Scan(&policyID); err != nil {
+		http.Error(w, "run not found", http.StatusNotFound)
+		return
+	}
+	db.Exec("DELETE FROM backup_policy_runs WHERE id=?", body.RunID)
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true})
+}
+
+// HandleCleanupClearAllRecords handles POST /cron/cleanup/clear-all-records
+// Body: {"policy_id": N} — deletes ALL run records for a policy from DB.
+func HandleCleanupClearAllRecords(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		PolicyID int64 `json:"policy_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PolicyID == 0 {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	// Verify policy exists
+	var dummy int64
+	if err := db.QueryRow("SELECT id FROM backup_policies WHERE id=?", body.PolicyID).Scan(&dummy); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	res, _ := db.Exec("DELETE FROM backup_policy_runs WHERE policy_id=?", body.PolicyID)
+	n, _ := res.RowsAffected()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "deleted": n})
 }
 
 // jsonErr writes a JSON error response.
