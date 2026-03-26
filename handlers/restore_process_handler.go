@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"html"
 	"html/template"
-	"net/http"
 	"log"
+	"net/http"
 )
 
 // HandleRestoreProgress serves the restore progress page with a progress bar

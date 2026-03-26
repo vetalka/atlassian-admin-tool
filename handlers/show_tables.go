@@ -1,28 +1,28 @@
 package handlers
 
 import (
-    "fmt"
-    "log"
-    "net/http"
+	"fmt"
+	"log"
+	"net/http"
 )
 
 // ShowTables displays all tables in the SQLite database
 func ShowTables(w http.ResponseWriter, r *http.Request) {
-    log.Println("Received request to show tables.")
+	log.Println("Received request to show tables.")
 
-    // Query to list all tables
-    query := `SELECT name FROM sqlite_master WHERE type='table';`
-    rows, err := db.Query(query)
-    if err != nil {
-        log.Printf("Database query failed: %v", err)
-        http.Error(w, fmt.Sprintf("Failed to retrieve tables: %v", err), http.StatusInternalServerError)
-        return
-    }
-    defer rows.Close()
+	// Query to list all tables
+	query := `SELECT name FROM sqlite_master WHERE type='table';`
+	rows, err := db.Query(query)
+	if err != nil {
+		log.Printf("Database query failed: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to retrieve tables: %v", err), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
 
-    log.Println("Database query successful, processing results.")
+	log.Println("Database query successful, processing results.")
 
-    fmt.Fprintf(w, `
+	fmt.Fprintf(w, `
     <!DOCTYPE html>
     <html lang="en">
     <head>
@@ -36,33 +36,32 @@ func ShowTables(w http.ResponseWriter, r *http.Request) {
         <ul>
     `)
 
-    count := 0
-    for rows.Next() {
-        var tableName string
-        err := rows.Scan(&tableName)
-        if err != nil {
-            log.Printf("Failed to scan row: %v", err)
-            http.Error(w, "Failed to process tables", http.StatusInternalServerError)
-            return
-        }
-        count++
-        fmt.Fprintf(w, `<li>Table: %s</li>`, tableName)
-    }
+	count := 0
+	for rows.Next() {
+		var tableName string
+		err := rows.Scan(&tableName)
+		if err != nil {
+			log.Printf("Failed to scan row: %v", err)
+			http.Error(w, "Failed to process tables", http.StatusInternalServerError)
+			return
+		}
+		count++
+		fmt.Fprintf(w, `<li>Table: %s</li>`, tableName)
+	}
 
-    if count == 0 {
-        log.Println("No tables found in the database.")
-    }
+	if count == 0 {
+		log.Println("No tables found in the database.")
+	}
 
-    if err = rows.Err(); err != nil {
-        log.Printf("Error iterating rows: %v", err)
-        http.Error(w, "Failed to process tables", http.StatusInternalServerError)
-        return
-    }
+	if err = rows.Err(); err != nil {
+		log.Printf("Error iterating rows: %v", err)
+		http.Error(w, "Failed to process tables", http.StatusInternalServerError)
+		return
+	}
 
-    fmt.Fprint(w, `
+	fmt.Fprint(w, `
         </ul>
     </body>
     </html>
     `)
 }
-

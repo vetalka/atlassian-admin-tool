@@ -1,34 +1,49 @@
 package handlers
 
 import (
-    "fmt"
-    "html/template"
-    "log"
-    "net/http"
-    "strings"
+	"fmt"
+	"html/template"
+	"log"
+	"net/http"
+	"strings"
 )
 
 func HandleUpdateEnvironmentForm(w http.ResponseWriter, r *http.Request) {
-    username, err := GetCurrentUsername(r)
-    if err != nil { http.Error(w, "Unauthorized", http.StatusUnauthorized); return }
-    isAdmin, err := IsAdminUser(username)
-    if err != nil { http.Error(w, "Failed to check user permissions", http.StatusInternalServerError); return }
+	username, err := GetCurrentUsername(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin, err := IsAdminUser(username)
+	if err != nil {
+		http.Error(w, "Failed to check user permissions", http.StatusInternalServerError)
+		return
+	}
 
-    environmentName := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/environment/edit/"))
+	environmentName := strings.TrimSpace(strings.TrimPrefix(r.URL.Path, "/environment/edit/"))
 
-    query := `SELECT name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir,
+	query := `SELECT name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir,
                      app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver,
                      eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url,
                      COALESCE(db_connection_type, 'ssh'), COALESCE(db_server_user, ''), COALESCE(db_server_password, '')
               FROM environments WHERE name = ?`
-    var name, ip, serverUser, serverPassword, installDir, homeDir, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseUrl, dbConnType, dbServerUser, dbServerPass string
-    err = db.QueryRow(query, environmentName).Scan(&name, &ip, &serverUser, &serverPassword, &installDir, &homeDir, &sharedHomeDir, &dbName, &dbUser, &dbPass, &dbPort, &dbHost, &dbDriver, &eazybiDBName, &eazybiDBUser, &eazybiDBPass, &eazybiDBPort, &eazybiDBHost, &baseUrl, &dbConnType, &dbServerUser, &dbServerPass)
-    if err != nil { log.Printf("Failed to fetch env: %v", err); http.Error(w, "Environment not found", http.StatusNotFound); return }
+	var name, ip, serverUser, serverPassword, installDir, homeDir, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseUrl, dbConnType, dbServerUser, dbServerPass string
+	err = db.QueryRow(query, environmentName).Scan(&name, &ip, &serverUser, &serverPassword, &installDir, &homeDir, &sharedHomeDir, &dbName, &dbUser, &dbPass, &dbPort, &dbHost, &dbDriver, &eazybiDBName, &eazybiDBUser, &eazybiDBPass, &eazybiDBPort, &eazybiDBHost, &baseUrl, &dbConnType, &dbServerUser, &dbServerPass)
+	if err != nil {
+		log.Printf("Failed to fetch env: %v", err)
+		http.Error(w, "Environment not found", http.StatusNotFound)
+		return
+	}
 
-    sshSelected := ""; winrmSelected := ""
-    if dbConnType == "winrm" { winrmSelected = "selected" } else { sshSelected = "selected" }
+	sshSelected := ""
+	winrmSelected := ""
+	if dbConnType == "winrm" {
+		winrmSelected = "selected"
+	} else {
+		sshSelected = "selected"
+	}
 
-    extraHead := template.HTML(`<script>
+	extraHead := template.HTML(`<script>
         function toggleDBFields() {
             var ct = document.getElementById('dbConnType').value;
             document.getElementById('db-server-edit-fields').style.display = ct === 'winrm' ? 'block' : 'none';
@@ -36,7 +51,7 @@ func HandleUpdateEnvironmentForm(w http.ResponseWriter, r *http.Request) {
         document.addEventListener('DOMContentLoaded', toggleDBFields);
     </script>`)
 
-    content := fmt.Sprintf(`
+	content := fmt.Sprintf(`
         <div class="ads-page-centered">
             <div class="ads-page-content" style="max-width: 800px;">
                 <div class="ads-page-header">
@@ -106,37 +121,45 @@ func HandleUpdateEnvironmentForm(w http.ResponseWriter, r *http.Request) {
                 </form>
             </div>
         </div>`, name, name, name, ip, serverUser, installDir, homeDir, sharedHomeDir, baseUrl,
-        dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
-        eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost,
-        sshSelected, winrmSelected, dbServerUser,
-        name)
+		dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
+		eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost,
+		sshSelected, winrmSelected, dbServerUser,
+		name)
 
-    RenderPage(w, PageData{Title: "Edit Environment", IsAdmin: isAdmin, ExtraHead: extraHead, Content: template.HTML(content)})
+	RenderPage(w, PageData{Title: "Edit Environment", IsAdmin: isAdmin, ExtraHead: extraHead, Content: template.HTML(content)})
 }
 
 func HandleUpdateEnvironment(w http.ResponseWriter, r *http.Request) {
-    environmentName := strings.TrimSpace(r.FormValue("environmentName"))
-    if environmentName == "" { http.Error(w, "Environment name is missing", http.StatusBadRequest); return }
+	environmentName := strings.TrimSpace(r.FormValue("environmentName"))
+	if environmentName == "" {
+		http.Error(w, "Environment name is missing", http.StatusBadRequest)
+		return
+	}
 
-    var existingName string
-    if err := db.QueryRow("SELECT name FROM environments WHERE name = ?", environmentName).Scan(&existingName); err != nil {
-        http.Error(w, "Environment not found", http.StatusNotFound); return
-    }
+	var existingName string
+	if err := db.QueryRow("SELECT name FROM environments WHERE name = ?", environmentName).Scan(&existingName); err != nil {
+		http.Error(w, "Environment not found", http.StatusNotFound)
+		return
+	}
 
-    _, err := db.Exec(`UPDATE environments SET ip=?, server_user=?, server_password=?, install_dir=?, home_dir=?, sharedhome_dir=?, app_dbname=?, app_dbuser=?, app_dbpass=?, app_dbport=?, app_dbhost=?, db_driver=?, eazybi_dbname=?, eazybi_dbuser=?, eazybi_dbpass=?, eazybi_dbport=?, eazybi_dbhost=?, base_url=?, db_connection_type=?, db_server_user=? WHERE name=?`,
-        r.FormValue("ip"), r.FormValue("serverUser"), r.FormValue("serverPassword"),
-        r.FormValue("installDir"), r.FormValue("homeDir"), r.FormValue("sharedHomeDir"),
-        r.FormValue("dbName"), r.FormValue("dbUser"), r.FormValue("dbPass"),
-        r.FormValue("dbPort"), r.FormValue("dbHost"), r.FormValue("dbDriver"),
-        r.FormValue("eazybiDBName"), r.FormValue("eazybiDBUser"), r.FormValue("eazybiDBPass"),
-        r.FormValue("eazybiDBPort"), r.FormValue("eazybiDBHost"), r.FormValue("baseUrl"),
-        r.FormValue("dbConnType"), r.FormValue("dbServerUser"),
-        environmentName)
+	_, err := db.Exec(`UPDATE environments SET ip=?, server_user=?, server_password=?, install_dir=?, home_dir=?, sharedhome_dir=?, app_dbname=?, app_dbuser=?, app_dbpass=?, app_dbport=?, app_dbhost=?, db_driver=?, eazybi_dbname=?, eazybi_dbuser=?, eazybi_dbpass=?, eazybi_dbport=?, eazybi_dbhost=?, base_url=?, db_connection_type=?, db_server_user=? WHERE name=?`,
+		r.FormValue("ip"), r.FormValue("serverUser"), r.FormValue("serverPassword"),
+		r.FormValue("installDir"), r.FormValue("homeDir"), r.FormValue("sharedHomeDir"),
+		r.FormValue("dbName"), r.FormValue("dbUser"), r.FormValue("dbPass"),
+		r.FormValue("dbPort"), r.FormValue("dbHost"), r.FormValue("dbDriver"),
+		r.FormValue("eazybiDBName"), r.FormValue("eazybiDBUser"), r.FormValue("eazybiDBPass"),
+		r.FormValue("eazybiDBPort"), r.FormValue("eazybiDBHost"), r.FormValue("baseUrl"),
+		r.FormValue("dbConnType"), r.FormValue("dbServerUser"),
+		environmentName)
 
-    // Update DB server password only if provided (non-empty)
-    if dbServerPass := r.FormValue("dbServerPassword"); dbServerPass != "" {
-        db.Exec(`UPDATE environments SET db_server_password=? WHERE name=?`, dbServerPass, environmentName)
-    }
-    if err != nil { log.Printf("Failed to update: %v", err); http.Error(w, "Failed to update", http.StatusInternalServerError); return }
-    http.Redirect(w, r, "/environment/show/"+environmentName, http.StatusSeeOther)
+	// Update DB server password only if provided (non-empty)
+	if dbServerPass := r.FormValue("dbServerPassword"); dbServerPass != "" {
+		db.Exec(`UPDATE environments SET db_server_password=? WHERE name=?`, dbServerPass, environmentName)
+	}
+	if err != nil {
+		log.Printf("Failed to update: %v", err)
+		http.Error(w, "Failed to update", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/environment/show/"+environmentName, http.StatusSeeOther)
 }

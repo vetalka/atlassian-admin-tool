@@ -128,7 +128,7 @@ func RestoreAttachmentsOnEachServerJira(homeDir, installDir, attachmentsRestoreF
 		}
 
 		log.Printf("Attachments restored successfully on %s", serverIP)
-			// Adjust ownership of files
+		// Adjust ownership of files
 		ownershipCmd := fmt.Sprintf(
 			"(if [ -f %s/conf/server.xml ]; then "+
 				"user_group_info=$(ssh -o StrictHostKeyChecking=no %s@%s \"sudo stat -c '%%U %%G' %s/conf/server.xml\"); "+
@@ -257,7 +257,7 @@ func RestoreNFSDirJira(sharedHomeDir, installDir, NFSRestoreFile, dataCurrentBac
 	finalOwnershipCmd := fmt.Sprintf("sudo chown -R root:root %s", dataCurrentBackup)
 	if err := executeRemoteCommand(client, finalOwnershipCmd); err != nil {
 		return fmt.Errorf("failed to adjust ownership of backup folder to root:root on %s: %v", serverIP, err)
-	}	
+	}
 
 	log.Printf("Shared home directory restored successfully on NFS server: %s", serverIP)
 	return nil
@@ -321,7 +321,6 @@ func RestoreSharedHomeDirConfluence(sharedHomeDir, installDir, dataRestoreFile, 
 	return nil
 }
 
-
 // RestoreSharedHomeDirConfluence handles the restoration process for a shared home directory (NFS) for Confluence.
 func RestoreNFSDirConfluence(sharedHomeDir, installDir, NFSRestoreFile, dataCurrentBackup, dataFolder, remoteUser, serverIPs, serverPassword string) error {
 	log.Printf("Starting sharedhome directory restore for Confluence on NFS at %s", sharedHomeDir)
@@ -379,7 +378,7 @@ func RestoreNFSDirConfluence(sharedHomeDir, installDir, NFSRestoreFile, dataCurr
 	finalOwnershipCmd := fmt.Sprintf("sudo chown -R root:root %s", dataCurrentBackup)
 	if err := executeRemoteCommand(client, finalOwnershipCmd); err != nil {
 		return fmt.Errorf("failed to adjust ownership of backup folder to root:root on %s: %v", serverIP, err)
-	}	
+	}
 
 	log.Printf("Shared home directory for Confluence restored successfully on NFS server: %s", serverIP)
 	return nil

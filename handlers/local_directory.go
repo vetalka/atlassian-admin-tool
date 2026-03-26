@@ -1,47 +1,47 @@
 package handlers
 
 import (
-    "fmt"
-    "log"
-    "net/http"
-    "html"
-    "golang.org/x/crypto/bcrypt"
+	"fmt"
+	"golang.org/x/crypto/bcrypt"
+	"html"
+	"log"
+	"net/http"
 )
 
 // HandleUserManagement renders a page to manage users (list, add, delete, update password)
 func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        // Fetch all users from the database
-        rows, err := db.Query("SELECT id, username FROM users WHERE directory = 'Local Directory'")
-        if err != nil {
-            log.Printf("Failed to query users: %v", err)
-            http.Error(w, "Failed to load users", http.StatusInternalServerError)
-            return
-        }
-        defer rows.Close()
+	if r.Method == http.MethodGet {
+		// Fetch all users from the database
+		rows, err := db.Query("SELECT id, username FROM users WHERE directory = 'Local Directory'")
+		if err != nil {
+			log.Printf("Failed to query users: %v", err)
+			http.Error(w, "Failed to load users", http.StatusInternalServerError)
+			return
+		}
+		defer rows.Close()
 
-        // Fetch groups from the database
-        groupRows, err := db.Query("SELECT DISTINCT groups FROM groups")
-        if err != nil {
-            log.Printf("Failed to query groups: %v", err)
-            http.Error(w, "Failed to load groups", http.StatusInternalServerError)
-            return
-        }
-        defer groupRows.Close()
+		// Fetch groups from the database
+		groupRows, err := db.Query("SELECT DISTINCT groups FROM groups")
+		if err != nil {
+			log.Printf("Failed to query groups: %v", err)
+			http.Error(w, "Failed to load groups", http.StatusInternalServerError)
+			return
+		}
+		defer groupRows.Close()
 
-        // Build the group dropdown options
-        groupOptions := ""
-        for groupRows.Next() {
-            var groupName string
-            if err := groupRows.Scan(&groupName); err != nil {
-                log.Printf("Failed to scan group: %v", err)
-                continue
-            }
-            groupOptions += fmt.Sprintf(`<option value="%s">%s</option>`, html.EscapeString(groupName), html.EscapeString(groupName))
-        }
+		// Build the group dropdown options
+		groupOptions := ""
+		for groupRows.Next() {
+			var groupName string
+			if err := groupRows.Scan(&groupName); err != nil {
+				log.Printf("Failed to scan group: %v", err)
+				continue
+			}
+			groupOptions += fmt.Sprintf(`<option value="%s">%s</option>`, html.EscapeString(groupName), html.EscapeString(groupName))
+		}
 
-        // Start of HTML with adjusted layout
-        html := fmt.Sprintf(`
+		// Start of HTML with adjusted layout
+		html := fmt.Sprintf(`
         
         <div class="user-management-container">
             <div class="user-list-section">
@@ -58,15 +58,15 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
                         <th>Update Password</th>
                     </tr>`)
 
-        // Add each user to the table with a delete button and password update form
-        for rows.Next() {
-            var id int
-            var username string
-            if err := rows.Scan(&id, &username); err != nil {
-                log.Printf("Failed to scan user: %v", err)
-                continue
-            }
-            html += fmt.Sprintf(`
+		// Add each user to the table with a delete button and password update form
+		for rows.Next() {
+			var id int
+			var username string
+			if err := rows.Scan(&id, &username); err != nil {
+				log.Printf("Failed to scan user: %v", err)
+				continue
+			}
+			html += fmt.Sprintf(`
                 <tr>
                     <td>%s</td>
                     <td>
@@ -83,9 +83,9 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
                         </form>
                     </td>
                 </tr>`, username, id, id)
-        }
+		}
 
-        html += fmt.Sprintf(`
+		html += fmt.Sprintf(`
                 </table>
             </div>
             <div class="add-user-section">
@@ -125,85 +125,85 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
         window._filterLocal = filterLocalTable;
         </script>`, groupOptions)
 
-        fmt.Fprintln(w, html)
-    }
+		fmt.Fprintln(w, html)
+	}
 }
 
 // HandleDeleteUser handles deleting a user from the database
 func HandleDeleteUser(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodPost {
-        userID := r.FormValue("id")
+	if r.Method == http.MethodPost {
+		userID := r.FormValue("id")
 
-        // Delete the user from the database
-        _, err := db.Exec("DELETE FROM users WHERE id = ?", userID)
-        if err != nil {
-            log.Printf("Failed to delete user: %v", err)
-            http.Error(w, "Failed to delete user", http.StatusInternalServerError)
-            return
-        }
+		// Delete the user from the database
+		_, err := db.Exec("DELETE FROM users WHERE id = ?", userID)
+		if err != nil {
+			log.Printf("Failed to delete user: %v", err)
+			http.Error(w, "Failed to delete user", http.StatusInternalServerError)
+			return
+		}
 
-        // Redirect back to the user management page
-        http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
-    } else {
-        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-    }
+		// Redirect back to the user management page
+		http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
+	} else {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	}
 }
 
 // HandleUpdatePassword handles updating a user's password
 func HandleUpdatePassword(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodPost {
-        userID := r.FormValue("id")
-        newPassword := r.FormValue("new_password")
+	if r.Method == http.MethodPost {
+		userID := r.FormValue("id")
+		newPassword := r.FormValue("new_password")
 
-        // Hash the new password using bcrypt
-        passwordHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
-        if err != nil {
-            log.Printf("Failed to hash new password: %v", err)
-            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-            return
-        }
+		// Hash the new password using bcrypt
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+		if err != nil {
+			log.Printf("Failed to hash new password: %v", err)
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
-        // Update the password in the database
-        _, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", passwordHash, userID)
-        if err != nil {
-            log.Printf("Failed to update password: %v", err)
-            http.Error(w, "Failed to update password", http.StatusInternalServerError)
-            return
-        }
+		// Update the password in the database
+		_, err = db.Exec("UPDATE users SET password = ? WHERE id = ?", passwordHash, userID)
+		if err != nil {
+			log.Printf("Failed to update password: %v", err)
+			http.Error(w, "Failed to update password", http.StatusInternalServerError)
+			return
+		}
 
-        // Redirect back to the user management page
-        http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
-    } else {
-        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-    }
+		// Redirect back to the user management page
+		http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
+	} else {
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	}
 }
 
 // HandleAddLocalUser handles adding a new local directory user
 func HandleAddLocalUser(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodPost {
-        username := r.FormValue("username")
-        password := r.FormValue("password")
-        groups := r.FormValue("groups") 
+	if r.Method == http.MethodPost {
+		username := r.FormValue("username")
+		password := r.FormValue("password")
+		groups := r.FormValue("groups")
 
-        // Hash the password using bcrypt
-        passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
-        if err != nil {
-            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-            return
-        }
+		// Hash the password using bcrypt
+		passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
-        // Insert the new user into the database with groups
-        _, err = db.Exec("INSERT INTO users (username, password, directory, groups) VALUES (?, ?, 'Local Directory', ?)", username, passwordHash, groups)
-        if err != nil {
-            log.Printf("Failed to add user: %v", err)
-            http.Error(w, "Failed to add user", http.StatusInternalServerError)
-            return
-        }
+		// Insert the new user into the database with groups
+		_, err = db.Exec("INSERT INTO users (username, password, directory, groups) VALUES (?, ?, 'Local Directory', ?)", username, passwordHash, groups)
+		if err != nil {
+			log.Printf("Failed to add user: %v", err)
+			http.Error(w, "Failed to add user", http.StatusInternalServerError)
+			return
+		}
 
-        // Redirect back to the user management page after successful addition
-        http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
-    } else {
-        // If not POST method, return error
-        http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
-    }
+		// Redirect back to the user management page after successful addition
+		http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
+	} else {
+		// If not POST method, return error
+		http.Error(w, "Invalid request method", http.StatusMethodNotAllowed)
+	}
 }

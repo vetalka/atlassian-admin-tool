@@ -58,7 +58,6 @@ func RestoreLocalHomeDir(appType, homeDir, backupDirHome, installDir, remoteUser
 	}
 }
 
-
 // RestoreLocalHomeDir handles the restoration process for the local home directory.
 func RestoreLocalHomeDirJira(homeDir, backupDirHome, installDir, remoteUser, serverIPs, serverPassword, tempRestoreFolder string) error {
 	log.Printf("Starting Local Home Directory Restore Process on servers: %s", serverIPs)
@@ -82,7 +81,7 @@ func RestoreLocalHomeDirJira(homeDir, backupDirHome, installDir, remoteUser, ser
 		}
 		log.Printf("Renamed existing home directory on %s", serverIP)
 
-		// Create home directory 
+		// Create home directory
 		createmeCmd := fmt.Sprintf("sudo mkdir -p %s", homeDir)
 		if err := executeRemoteCommand(client, createmeCmd); err != nil {
 			return fmt.Errorf("failed to create home directory on %s: %v", serverIP, err)
@@ -122,33 +121,33 @@ func RestoreLocalHomeDirJira(homeDir, backupDirHome, installDir, remoteUser, ser
 			fmt.Sprintf("if [ -d %s/kerberos ]; then sudo rm -rf %s/kerberos && sudo cp -r %s/kerberos %s; fi", homeDir, homeDir, backupDirHome, homeDir),
 
 			// Extract keystore file path from server.xml and copy the certificate file if it exists
-			fmt.Sprintf("(if [ -f %s/conf/server.xml ]; then "+ 
-				"KEYS_FILE_PATH=$(sudo grep 'keystoreFile=' %s/conf/server.xml | sed -e 's/.*keystoreFile=\"\\([^\\\"]*\\)\".*/\\1/'); "+ 
-				"echo \"Keystore File Path: $KEYS_FILE_PATH\"; "+ 
-				"CERT_FILE_NAME=$(basename \"$KEYS_FILE_PATH\"); "+ 
-				"echo \"Certificate File Name: $CERT_FILE_NAME\"; "+ 
-				"RELATIVE_KEY_PATH=${KEYS_FILE_PATH#%s/}; "+ 
-				"echo \"Relative Keystore Path: $RELATIVE_KEY_PATH\"; "+ 
-				"BACKUP_CERT_FILE=%s/$RELATIVE_KEY_PATH; "+ 
-				"if [ -f \"$BACKUP_CERT_FILE\" ]; then "+ 
-				"DEST_DIR=$(dirname \"$KEYS_FILE_PATH\"); "+ 
-				"sudo mkdir -p \"$DEST_DIR\"; "+ 
-				"sudo cp \"$BACKUP_CERT_FILE\" \"$DEST_DIR/\" && echo \"Certificate file copied successfully.\" || echo \"Error in copying certificate file.\"; "+ 
-				"else echo \"Backup certificate file not found at $BACKUP_CERT_FILE\"; "+ 
-				"fi; "+ 
-				"else echo \"%s/conf/server.xml does not exist.\"; fi) > /dev/null 2>&1", 
+			fmt.Sprintf("(if [ -f %s/conf/server.xml ]; then "+
+				"KEYS_FILE_PATH=$(sudo grep 'keystoreFile=' %s/conf/server.xml | sed -e 's/.*keystoreFile=\"\\([^\\\"]*\\)\".*/\\1/'); "+
+				"echo \"Keystore File Path: $KEYS_FILE_PATH\"; "+
+				"CERT_FILE_NAME=$(basename \"$KEYS_FILE_PATH\"); "+
+				"echo \"Certificate File Name: $CERT_FILE_NAME\"; "+
+				"RELATIVE_KEY_PATH=${KEYS_FILE_PATH#%s/}; "+
+				"echo \"Relative Keystore Path: $RELATIVE_KEY_PATH\"; "+
+				"BACKUP_CERT_FILE=%s/$RELATIVE_KEY_PATH; "+
+				"if [ -f \"$BACKUP_CERT_FILE\" ]; then "+
+				"DEST_DIR=$(dirname \"$KEYS_FILE_PATH\"); "+
+				"sudo mkdir -p \"$DEST_DIR\"; "+
+				"sudo cp \"$BACKUP_CERT_FILE\" \"$DEST_DIR/\" && echo \"Certificate file copied successfully.\" || echo \"Error in copying certificate file.\"; "+
+				"else echo \"Backup certificate file not found at $BACKUP_CERT_FILE\"; "+
+				"fi; "+
+				"else echo \"%s/conf/server.xml does not exist.\"; fi) > /dev/null 2>&1",
 				installDir, installDir, homeDir, backupDirHome, installDir),
 
 			// Extract user and group from the server.xml file and change ownership
-			fmt.Sprintf("if [ -f %s/conf/server.xml ]; then "+ 
-				"user_group_info=$(ls -l %s/conf/server.xml | awk '{print $3, $4}'); "+ 
-				"read user group <<< \"$user_group_info\"; "+ 
-				"echo \"User: $user, Group: $group\"; "+ 
-				"if [ -n \"$user\" ] && [ -n \"$group\" ]; then "+ 
-				"sudo chown -R \"$user:$group\" \"%s\" && echo \"Ownership changed successfully on %s.\" || echo \"Failed to change ownership on %s.\"; "+ 
-				"else echo \"User or group could not be determined.\"; "+ 
-				"fi; "+ 
-				"else echo \"%s/conf/server.xml does not exist.\"; fi", 
+			fmt.Sprintf("if [ -f %s/conf/server.xml ]; then "+
+				"user_group_info=$(ls -l %s/conf/server.xml | awk '{print $3, $4}'); "+
+				"read user group <<< \"$user_group_info\"; "+
+				"echo \"User: $user, Group: $group\"; "+
+				"if [ -n \"$user\" ] && [ -n \"$group\" ]; then "+
+				"sudo chown -R \"$user:$group\" \"%s\" && echo \"Ownership changed successfully on %s.\" || echo \"Failed to change ownership on %s.\"; "+
+				"else echo \"User or group could not be determined.\"; "+
+				"fi; "+
+				"else echo \"%s/conf/server.xml does not exist.\"; fi",
 				installDir, installDir, homeDir, homeDir, homeDir, installDir),
 		}
 
@@ -162,7 +161,6 @@ func RestoreLocalHomeDirJira(homeDir, backupDirHome, installDir, remoteUser, ser
 
 	return nil
 }
-
 
 // RestoreLocalHomeDir handles the restoration process for the local home directory.
 func RestoreLocalHomeDirConfluence(homeDir, backupDirHome, installDir, remoteUser, serverIPs, serverPassword, tempRestoreFolder string) error {
@@ -187,7 +185,7 @@ func RestoreLocalHomeDirConfluence(homeDir, backupDirHome, installDir, remoteUse
 		}
 		log.Printf("Renamed existing home directory on %s", serverIP)
 
-		// Create home directory 
+		// Create home directory
 		createHomeCmd := fmt.Sprintf("sudo mkdir -p %s", homeDir)
 		if err := executeRemoteCommand(client, createHomeCmd); err != nil {
 			return fmt.Errorf("failed to create home directory on %s: %v", serverIP, err)
@@ -231,7 +229,7 @@ func RestoreLocalHomeDirConfluence(homeDir, backupDirHome, installDir, remoteUse
 					sudo mkdir -p "$DEST_DIR"; 
 					sudo cp "$BACKUP_CERT_FILE" "$DEST_DIR/" && echo "Certificate file copied successfully." || echo "Error in copying certificate file.";
 				else echo "Backup certificate file not found at $BACKUP_CERT_FILE"; fi;
-				else echo "%s/conf/server.xml does not exist."; fi) > /dev/null 2>&1`, 
+				else echo "%s/conf/server.xml does not exist."; fi) > /dev/null 2>&1`,
 				installDir, installDir, homeDir, backupDirHome, installDir),
 
 			// Change ownership of the restored files based on user and group from server.xml
@@ -242,7 +240,7 @@ func RestoreLocalHomeDirConfluence(homeDir, backupDirHome, installDir, remoteUse
 					sudo chown -R "$user:$group" "%s" && echo "Ownership changed successfully on %s." || echo "Failed to change ownership on %s."; 
 				else echo "User or group could not be determined."; 
 				fi; 
-				else echo "%s/conf/server.xml does not exist."; fi`, 
+				else echo "%s/conf/server.xml does not exist."; fi`,
 				installDir, installDir, homeDir, homeDir, homeDir, installDir),
 		}
 

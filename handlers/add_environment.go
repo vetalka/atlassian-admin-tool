@@ -1,82 +1,91 @@
 package handlers
 
 import (
-    "database/sql"
-    "fmt"
-    "html/template"
-    "log"
-    "net/http"
-    "strings"
+	"database/sql"
+	"fmt"
+	"html/template"
+	"log"
+	"net/http"
+	"strings"
 )
 
 func handleApplication(app, ip, serverUser, serverPassword, name string) error {
-    switch app {
-    case "Jira":      return handleJiraEnvironment(ip, serverUser, serverPassword, name)
-    case "Confluence": return handleConfluenceEnvironment(ip, serverUser, serverPassword, name)
-    case "Bitbucket":  return handleBitbucketEnvironment(ip, serverUser, serverPassword, name)
-    default:           return fmt.Errorf("unsupported application: %s", app)
-    }
+	switch app {
+	case "Jira":
+		return handleJiraEnvironment(ip, serverUser, serverPassword, name)
+	case "Confluence":
+		return handleConfluenceEnvironment(ip, serverUser, serverPassword, name)
+	case "Bitbucket":
+		return handleBitbucketEnvironment(ip, serverUser, serverPassword, name)
+	default:
+		return fmt.Errorf("unsupported application: %s", app)
+	}
 }
 
 // isSecuredPassword checks if the password is an Atlassian secured/encrypted marker
 func isSecuredPassword(pass string) bool {
-    p := strings.TrimSpace(pass)
-    return p == "" || strings.Contains(p, "{ATL_SECURED}") || strings.Contains(p, "{ENCRYPTED}")
+	p := strings.TrimSpace(pass)
+	return p == "" || strings.Contains(p, "{ATL_SECURED}") || strings.Contains(p, "{ENCRYPTED}")
 }
 
 func HandleAddEnvironment(w http.ResponseWriter, r *http.Request) {
-    var errorMessage string
-    if r.Method == http.MethodPost {
-        app := r.FormValue("app"); name := r.FormValue("name"); ip := r.FormValue("ip")
-        serverUser := r.FormValue("server_user"); serverPassword := r.FormValue("server_password")
-        dbConnType := r.FormValue("db_connection_type")
-        dbServerUser := r.FormValue("db_server_user")
-        dbServerPassword := r.FormValue("db_server_password")
+	var errorMessage string
+	if r.Method == http.MethodPost {
+		app := r.FormValue("app")
+		name := r.FormValue("name")
+		ip := r.FormValue("ip")
+		serverUser := r.FormValue("server_user")
+		serverPassword := r.FormValue("server_password")
+		dbConnType := r.FormValue("db_connection_type")
+		dbServerUser := r.FormValue("db_server_user")
+		dbServerPassword := r.FormValue("db_server_password")
 
-        if dbConnType == "" {
-            dbConnType = "ssh"
-        }
+		if dbConnType == "" {
+			dbConnType = "ssh"
+		}
 
-        var existingName string
-        err := db.QueryRow("SELECT name FROM environments WHERE name = ?", name).Scan(&existingName)
-        if err != nil && err != sql.ErrNoRows {
-            errorMessage = "Error: Could not check for duplicate environment name."
-        } else if existingName != "" {
-            errorMessage = "Error: Environment with this name already exists."
-        } else {
-            if errorMessage == "" {
-                err = handleApplication(app, ip, serverUser, serverPassword, name)
-                if err != nil {
-                    errStr := err.Error()
-                    if strings.HasPrefix(errStr, "NEEDS_DB_PASSWORD:") {
-                        // Environment saved but needs DB password — redirect to complete setup
-                        envName := strings.TrimPrefix(errStr, "NEEDS_DB_PASSWORD:")
-                        // Also save the WinRM/DB server settings
-                        db.Exec(`UPDATE environments SET db_connection_type=?, db_server_user=?, db_server_password=? WHERE name=?`,
-                            dbConnType, dbServerUser, dbServerPassword, envName)
-                        http.Redirect(w, r, "/complete-env-setup?name="+envName, http.StatusSeeOther); return
-                    }
-                    log.Printf("Failed to process application: %v", err)
-                    errorMessage = "Error: " + err.Error()
-                } else {
-                    // Save DB server credentials
-                    _, err = db.Exec(`UPDATE environments SET db_connection_type=?, db_server_user=?, db_server_password=? WHERE name=?`,
-                        dbConnType, dbServerUser, dbServerPassword, name)
-                    if err != nil {
-                        log.Printf("Warning: failed to save DB server credentials: %v", err)
-                    }
-                    http.Redirect(w, r, "/", http.StatusSeeOther); return
-                }
-            }
-        }
-    }
+		var existingName string
+		err := db.QueryRow("SELECT name FROM environments WHERE name = ?", name).Scan(&existingName)
+		if err != nil && err != sql.ErrNoRows {
+			errorMessage = "Error: Could not check for duplicate environment name."
+		} else if existingName != "" {
+			errorMessage = "Error: Environment with this name already exists."
+		} else {
+			if errorMessage == "" {
+				err = handleApplication(app, ip, serverUser, serverPassword, name)
+				if err != nil {
+					errStr := err.Error()
+					if strings.HasPrefix(errStr, "NEEDS_DB_PASSWORD:") {
+						// Environment saved but needs DB password — redirect to complete setup
+						envName := strings.TrimPrefix(errStr, "NEEDS_DB_PASSWORD:")
+						// Also save the WinRM/DB server settings
+						db.Exec(`UPDATE environments SET db_connection_type=?, db_server_user=?, db_server_password=? WHERE name=?`,
+							dbConnType, dbServerUser, dbServerPassword, envName)
+						http.Redirect(w, r, "/complete-env-setup?name="+envName, http.StatusSeeOther)
+						return
+					}
+					log.Printf("Failed to process application: %v", err)
+					errorMessage = "Error: " + err.Error()
+				} else {
+					// Save DB server credentials
+					_, err = db.Exec(`UPDATE environments SET db_connection_type=?, db_server_user=?, db_server_password=? WHERE name=?`,
+						dbConnType, dbServerUser, dbServerPassword, name)
+					if err != nil {
+						log.Printf("Warning: failed to save DB server credentials: %v", err)
+					}
+					http.Redirect(w, r, "/", http.StatusSeeOther)
+					return
+				}
+			}
+		}
+	}
 
-    errHtml := ""
-    if errorMessage != "" {
-        errHtml = fmt.Sprintf(`<div class="ads-alert ads-alert-error">%s</div>`, errorMessage)
-    }
+	errHtml := ""
+	if errorMessage != "" {
+		errHtml = fmt.Sprintf(`<div class="ads-alert ads-alert-error">%s</div>`, errorMessage)
+	}
 
-    content := fmt.Sprintf(`
+	content := fmt.Sprintf(`
         <div class="ads-page-centered">
             <div class="ads-page-content" style="max-width: 520px;">
                 <div class="ads-page-header">
@@ -148,7 +157,7 @@ func HandleAddEnvironment(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>`, errHtml)
 
-    extraHead := template.HTML(`<script>
+	extraHead := template.HTML(`<script>
         function toggleDBServerFields() {
             var connType = document.getElementById('db_connection_type').value;
             var fields = document.getElementById('db-server-fields');
@@ -156,101 +165,134 @@ func HandleAddEnvironment(w http.ResponseWriter, r *http.Request) {
         }
     </script>`)
 
-    RenderPage(w, PageData{Title: "Add Environment", IsAdmin: true, ExtraHead: extraHead, Content: template.HTML(content)})
+	RenderPage(w, PageData{Title: "Add Environment", IsAdmin: true, ExtraHead: extraHead, Content: template.HTML(content)})
 }
 
 func retrieveAndSaveClusterNodes(dbType, dbHost, dbPort, dbUser, dbPass, dbName, serverUser, serverPassword, envName string, db *sql.DB) error {
-    var ips string; var err error
-    switch dbType {
-    case "postgresql": ips, err = retrieveClusterInfoPostgreSQLSSH(dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
-    case "sqlserver":  ips, err = retrieveClusterInfoSQLServerSSH(dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
-    default: return fmt.Errorf("unsupported database type: %s", dbType)
-    }
-    if err != nil { return fmt.Errorf("failed to retrieve cluster nodes: %v", err) }
-    if ips != "" {
-        err = saveIPsToEnvironment(envName, ips, db)
-        if err != nil { return fmt.Errorf("failed to save IPs: %v", err) }
-    }
-    return nil
+	var ips string
+	var err error
+	switch dbType {
+	case "postgresql":
+		ips, err = retrieveClusterInfoPostgreSQLSSH(dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
+	case "sqlserver":
+		ips, err = retrieveClusterInfoSQLServerSSH(dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
+	default:
+		return fmt.Errorf("unsupported database type: %s", dbType)
+	}
+	if err != nil {
+		return fmt.Errorf("failed to retrieve cluster nodes: %v", err)
+	}
+	if ips != "" {
+		err = saveIPsToEnvironment(envName, ips, db)
+		if err != nil {
+			return fmt.Errorf("failed to save IPs: %v", err)
+		}
+	}
+	return nil
 }
 
 func mapDBDriverToDBType(dbDriver string) (string, error) {
-    switch dbDriver {
-    case "org.postgresql.Driver": return "postgresql", nil
-    case "com.microsoft.sqlserver.jdbc.SQLServerDriver": return "sqlserver", nil
-    default: return "", fmt.Errorf("unsupported database driver: %s", dbDriver)
-    }
+	switch dbDriver {
+	case "org.postgresql.Driver":
+		return "postgresql", nil
+	case "com.microsoft.sqlserver.jdbc.SQLServerDriver":
+		return "sqlserver", nil
+	default:
+		return "", fmt.Errorf("unsupported database driver: %s", dbDriver)
+	}
 }
 
 func handleJiraEnvironment(ip, serverUser, serverPassword, name string) error {
-    if err := CheckSSHConnection(ip, serverUser, serverPassword); err != nil { return fmt.Errorf("SSH validation failed: %v", err) }
-    installDir, dataPath, sharedHomeDir, err := getJiraInstallDir(ip, serverUser, serverPassword)
-    if err != nil { return fmt.Errorf("Failed to retrieve Jira directories: %v", err) }
-    dbHost, dbPort, dbName, dbUser, dbPass, dbDriver, err := executeDBParamsExtraction(ip, serverUser, serverPassword, dataPath, installDir)
-    if err != nil { return fmt.Errorf("Failed to retrieve database parameters: %v", err) }
-    dbType, err := mapDBDriverToDBType(dbDriver)
-    if err != nil { return fmt.Errorf("Failed to map database driver: %v", err) }
+	if err := CheckSSHConnection(ip, serverUser, serverPassword); err != nil {
+		return fmt.Errorf("SSH validation failed: %v", err)
+	}
+	installDir, dataPath, sharedHomeDir, err := getJiraInstallDir(ip, serverUser, serverPassword)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve Jira directories: %v", err)
+	}
+	dbHost, dbPort, dbName, dbUser, dbPass, dbDriver, err := executeDBParamsExtraction(ip, serverUser, serverPassword, dataPath, installDir)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve database parameters: %v", err)
+	}
+	dbType, err := mapDBDriverToDBType(dbDriver)
+	if err != nil {
+		return fmt.Errorf("Failed to map database driver: %v", err)
+	}
 
-    // Check if password is secured/encrypted — can't query DB without real password
-    needsPassword := isSecuredPassword(dbPass)
+	// Check if password is secured/encrypted — can't query DB without real password
+	needsPassword := isSecuredPassword(dbPass)
 
-    eazybiDBName, eazybiDBHost, eazybiDBPass, eazybiDBPort, eazybiDBUser := "", "", "", "", ""
-    baseURL := ""
+	eazybiDBName, eazybiDBHost, eazybiDBPass, eazybiDBPort, eazybiDBUser := "", "", "", "", ""
+	baseURL := ""
 
-    if !needsPassword {
-        eazybiDBName, eazybiDBHost, eazybiDBPass, eazybiDBPort, eazybiDBUser, _ = executeEazyBIDBParamsExtraction(ip, serverUser, serverPassword, dataPath, sharedHomeDir)
-        baseURL, _ = GetBaseURL(dbType, dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
-    }
+	if !needsPassword {
+		eazybiDBName, eazybiDBHost, eazybiDBPass, eazybiDBPort, eazybiDBUser, _ = executeEazyBIDBParamsExtraction(ip, serverUser, serverPassword, dataPath, sharedHomeDir)
+		baseURL, _ = GetBaseURL(dbType, dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
+	}
 
-    // Save environment — even with {ATL_SECURED} as password
-    if needsPassword {
-        dbPass = "" // Don't save the marker, save empty so user fills it in
-    }
-    _, err = db.Exec(`INSERT INTO environments (app, name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir, app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver, eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        "Jira", name, ip, serverUser, serverPassword, installDir, dataPath, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseURL)
-    if err != nil { return fmt.Errorf("Failed to add environment: %v", err) }
+	// Save environment — even with {ATL_SECURED} as password
+	if needsPassword {
+		dbPass = "" // Don't save the marker, save empty so user fills it in
+	}
+	_, err = db.Exec(`INSERT INTO environments (app, name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir, app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver, eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"Jira", name, ip, serverUser, serverPassword, installDir, dataPath, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseURL)
+	if err != nil {
+		return fmt.Errorf("Failed to add environment: %v", err)
+	}
 
-    if needsPassword {
-        return fmt.Errorf("NEEDS_DB_PASSWORD:%s", name)
-    }
+	if needsPassword {
+		return fmt.Errorf("NEEDS_DB_PASSWORD:%s", name)
+	}
 
-    return retrieveAndSaveClusterNodes(dbType, dbHost, dbPort, dbUser, dbPass, dbName, serverUser, serverPassword, name, db)
+	return retrieveAndSaveClusterNodes(dbType, dbHost, dbPort, dbUser, dbPass, dbName, serverUser, serverPassword, name, db)
 }
 
 func handleConfluenceEnvironment(ip, serverUser, serverPassword, name string) error {
-    if err := CheckSSHConnection(ip, serverUser, serverPassword); err != nil { return fmt.Errorf("SSH validation failed: %v", err) }
-    installDir, homeDir, err := GetConfluenceInstallDir(ip, serverUser, serverPassword)
-    if err != nil { return fmt.Errorf("Failed to retrieve Confluence directories: %v", err) }
-    sharedHomeDir, err := extractSharedHomeDirConfluence(ip, serverUser, serverPassword, homeDir)
-    if err != nil { return fmt.Errorf("Failed to retrieve shared home directory: %v", err) }
-    dbHost, dbPort, dbName, dbUser, dbPass, dbDriver, err := extractConfluenceDBParams(ip, serverUser, serverPassword, homeDir)
-    if err != nil { return fmt.Errorf("Failed to retrieve database parameters: %v", err) }
-    dbType, err := mapDBDriverToDBType(dbDriver)
-    if err != nil { return fmt.Errorf("Failed to map database driver: %v", err) }
+	if err := CheckSSHConnection(ip, serverUser, serverPassword); err != nil {
+		return fmt.Errorf("SSH validation failed: %v", err)
+	}
+	installDir, homeDir, err := GetConfluenceInstallDir(ip, serverUser, serverPassword)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve Confluence directories: %v", err)
+	}
+	sharedHomeDir, err := extractSharedHomeDirConfluence(ip, serverUser, serverPassword, homeDir)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve shared home directory: %v", err)
+	}
+	dbHost, dbPort, dbName, dbUser, dbPass, dbDriver, err := extractConfluenceDBParams(ip, serverUser, serverPassword, homeDir)
+	if err != nil {
+		return fmt.Errorf("Failed to retrieve database parameters: %v", err)
+	}
+	dbType, err := mapDBDriverToDBType(dbDriver)
+	if err != nil {
+		return fmt.Errorf("Failed to map database driver: %v", err)
+	}
 
-    needsPassword := isSecuredPassword(dbPass)
+	needsPassword := isSecuredPassword(dbPass)
 
-    baseURL := ""
-    clusterNodesStr := ip
-    if !needsPassword {
-        baseURL, _ = GetBaseURLConfluence(dbType, dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
-        clusterNodes, err := getClusterNodes(ip, serverUser, serverPassword, homeDir+"/confluence.cfg.xml")
-        if err == nil && len(clusterNodes) > 0 {
-            clusterNodesStr = strings.Join(clusterNodes, " ")
-        }
-    }
+	baseURL := ""
+	clusterNodesStr := ip
+	if !needsPassword {
+		baseURL, _ = GetBaseURLConfluence(dbType, dbHost, serverUser, serverPassword, dbHost, dbPort, dbUser, dbPass, dbName)
+		clusterNodes, err := getClusterNodes(ip, serverUser, serverPassword, homeDir+"/confluence.cfg.xml")
+		if err == nil && len(clusterNodes) > 0 {
+			clusterNodesStr = strings.Join(clusterNodes, " ")
+		}
+	}
 
-    if needsPassword {
-        dbPass = ""
-    }
-    _, err = db.Exec(`INSERT INTO environments (app, name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir, app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver, eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        "Confluence", name, clusterNodesStr, serverUser, serverPassword, installDir, homeDir, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, "", "", "", "", "", baseURL)
-    if err != nil { return fmt.Errorf("Failed to insert environment: %v", err) }
+	if needsPassword {
+		dbPass = ""
+	}
+	_, err = db.Exec(`INSERT INTO environments (app, name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir, app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver, eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"Confluence", name, clusterNodesStr, serverUser, serverPassword, installDir, homeDir, sharedHomeDir, dbName, dbUser, dbPass, dbPort, dbHost, dbDriver, "", "", "", "", "", baseURL)
+	if err != nil {
+		return fmt.Errorf("Failed to insert environment: %v", err)
+	}
 
-    if needsPassword {
-        return fmt.Errorf("NEEDS_DB_PASSWORD:%s", name)
-    }
-    return nil
+	if needsPassword {
+		return fmt.Errorf("NEEDS_DB_PASSWORD:%s", name)
+	}
+	return nil
 }
 
 func handleBitbucketEnvironment(ip, serverUser, serverPassword, name string) error { return nil }

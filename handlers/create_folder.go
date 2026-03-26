@@ -34,6 +34,3 @@ func HandleCreateFolder(w http.ResponseWriter, r *http.Request) {
 	`
 	fmt.Fprintln(w, html)
 }
-
-
-

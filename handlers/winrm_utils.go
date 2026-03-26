@@ -224,7 +224,8 @@ func runRemotePowerShellSSH(cfg RemoteExecConfig, script string) (string, error)
 
 // ExecRemoteCommand replaces sshpass+ssh pattern. Returns combined output and error.
 // This is a drop-in replacement for:
-//   exec.Command("sshpass", "-p", pass, "ssh", "-o", "StrictHostKeyChecking=no", "user@host", "command")
+//
+//	exec.Command("sshpass", "-p", pass, "ssh", "-o", "StrictHostKeyChecking=no", "user@host", "command")
 func ExecRemoteCommand(cfg RemoteExecConfig, command string) ([]byte, error) {
 	switch cfg.ConnectionType {
 	case "winrm":
@@ -251,7 +252,8 @@ func ExecRemoteCommand(cfg RemoteExecConfig, command string) ([]byte, error) {
 
 // ExecRemotePowerShellCmd replaces sshpass+ssh+powershell.exe pattern. Returns combined output and error.
 // This is a drop-in replacement for:
-//   exec.Command("sshpass", "-p", pass, "ssh", "user@host", "powershell.exe", "-Command", script)
+//
+//	exec.Command("sshpass", "-p", pass, "ssh", "user@host", "powershell.exe", "-Command", script)
 func ExecRemotePowerShellCmd(cfg RemoteExecConfig, script string) ([]byte, error) {
 	switch cfg.ConnectionType {
 	case "winrm":

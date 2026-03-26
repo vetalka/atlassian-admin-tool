@@ -1,18 +1,24 @@
 package handlers
 
 import (
-    "fmt"
-    "html/template"
-    "net/http"
+	"fmt"
+	"html/template"
+	"net/http"
 )
 
 func HandleUserManagement(w http.ResponseWriter, r *http.Request) {
-    username, err := GetCurrentUsername(r)
-    if err != nil { http.Error(w, "Unauthorized", http.StatusUnauthorized); return }
-    isAdmin, err := IsAdminUser(username)
-    if err != nil { http.Error(w, "Failed to check user permissions", http.StatusInternalServerError); return }
+	username, err := GetCurrentUsername(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin, err := IsAdminUser(username)
+	if err != nil {
+		http.Error(w, "Failed to check user permissions", http.StatusInternalServerError)
+		return
+	}
 
-    extraHead := template.HTML(`<script>
+	extraHead := template.HTML(`<script>
         function loadContent(url) {
             var xhr = new XMLHttpRequest();
             xhr.open("GET", url, true);
@@ -45,7 +51,7 @@ func HandleUserManagement(w http.ResponseWriter, r *http.Request) {
         });
     </script>`)
 
-    content := fmt.Sprintf(`
+	content := fmt.Sprintf(`
         <div style="position:fixed; top:56px; left:0; right:0; z-index:99;">
             <div class="ads-settings-bar">
                 <a href="/settings/users" class="active">User management</a>
@@ -98,9 +104,9 @@ func HandleUserManagement(w http.ResponseWriter, r *http.Request) {
             </div>
         </div>`)
 
-    RenderPage(w, PageData{Title: "Settings", IsAdmin: isAdmin, ExtraHead: extraHead, Content: template.HTML(content)})
+	RenderPage(w, PageData{Title: "Settings", IsAdmin: isAdmin, ExtraHead: extraHead, Content: template.HTML(content)})
 }
 
 func HandleSettingsRedirect(w http.ResponseWriter, r *http.Request) {
-    http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/users", http.StatusSeeOther)
 }

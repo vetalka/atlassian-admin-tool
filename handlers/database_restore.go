@@ -1,152 +1,151 @@
 package handlers
 
 import (
+	"bytes"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
-	"bytes"
 	"time"
-	"os"
 )
 
-// buildCfgFromRestore creates a RemoteExecConfig for restore operations, 
+// buildCfgFromRestore creates a RemoteExecConfig for restore operations,
 // auto-detecting whether to use WinRM or SSH based on the environment config.
 func buildCfgFromRestore(dbHost, remoteUser, serverPassword string) RemoteExecConfig {
 	return BuildDBRemoteConfigFromHost(dbHost, remoteUser, serverPassword)
 }
 
-
 var (
-    sqlcmdPath string
-    bcpPath    string
+	sqlcmdPath string
+	bcpPath    string
 )
 
 // Table list for different applications
 var appTableMap = map[string][]string{
-    "Jira": {
-        "propertyentry", "oauthspconsumer", "AO_21F425_MESSAGE_AO", "AO_FE1BC5_CLIENT",
-        "AO_723324_CLIENT_CONFIG", "mailserver", "AO_2C4E5C_MAILITEMCHUNK", "AO_2C4E5C_MAILITEM",
-        "AO_2C4E5C_MAILITEMAUDIT", "AO_54307E_EMAILCHANNELSETTING", "AO_2C4E5C_MAILCONNECTION",
-        "AO_2C4E5C_MAILCHANNEL", "AO_2C4E5C_MAILHANDLER", "AO_ED669C_IDP_CONFIGserver", "AO_ED669C_SEEN_ASSERTIONS",
-        "AO_93F03B_API_TOKEN_OBJECT", "AO_93F03B_RESTRICT_ENDPOINT",
-    },
-    "Confluence": {
-        "bandana", "propertyentry", "oauthspconsumer", "AO_21F425_MESSAGE_AO", "AO_FE1BC5_CLIENT",
-        "AO_723324_CLIENT_CONFIG", "mailserver", "AO_2C4E5C_MAILITEMCHUNK", "AO_2C4E5C_MAILITEM",
-        "AO_2C4E5C_MAILITEMAUDIT", "AO_54307E_EMAILCHANNELSETTING", "AO_2C4E5C_MAILCONNECTION", "AO_2C4E5C_MAILCHANNEL",
-        "AO_2C4E5C_MAILHANDLER", "AO_ED669C_IDP_CONFIGserver", "AO_ED669C_SEEN_ASSERTIONS", "AO_93F03B_API_TOKEN_OBJECT",
-        "AO_93F03B_RESTRICT_ENDPOINT",
-    },
+	"Jira": {
+		"propertyentry", "oauthspconsumer", "AO_21F425_MESSAGE_AO", "AO_FE1BC5_CLIENT",
+		"AO_723324_CLIENT_CONFIG", "mailserver", "AO_2C4E5C_MAILITEMCHUNK", "AO_2C4E5C_MAILITEM",
+		"AO_2C4E5C_MAILITEMAUDIT", "AO_54307E_EMAILCHANNELSETTING", "AO_2C4E5C_MAILCONNECTION",
+		"AO_2C4E5C_MAILCHANNEL", "AO_2C4E5C_MAILHANDLER", "AO_ED669C_IDP_CONFIGserver", "AO_ED669C_SEEN_ASSERTIONS",
+		"AO_93F03B_API_TOKEN_OBJECT", "AO_93F03B_RESTRICT_ENDPOINT",
+	},
+	"Confluence": {
+		"bandana", "propertyentry", "oauthspconsumer", "AO_21F425_MESSAGE_AO", "AO_FE1BC5_CLIENT",
+		"AO_723324_CLIENT_CONFIG", "mailserver", "AO_2C4E5C_MAILITEMCHUNK", "AO_2C4E5C_MAILITEM",
+		"AO_2C4E5C_MAILITEMAUDIT", "AO_54307E_EMAILCHANNELSETTING", "AO_2C4E5C_MAILCONNECTION", "AO_2C4E5C_MAILCHANNEL",
+		"AO_2C4E5C_MAILHANDLER", "AO_ED669C_IDP_CONFIGserver", "AO_ED669C_SEEN_ASSERTIONS", "AO_93F03B_API_TOKEN_OBJECT",
+		"AO_93F03B_RESTRICT_ENDPOINT",
+	},
 	"eazyBI": {
-        "system_settings",
-    },
+		"system_settings",
+	},
 }
 
 // RestoreDatabase handles the restoration process for the databases (Jira, Confluence).
 func RestoreDatabase(envName, dbKind, dbHost, dbPort, dbUser, dbPass, dbName, dbTmp, dbTmp2, tempRestoreFolder, remoteUser, serverPassword, baseUrl, remoteTempFolder, app string) error {
-    log.Printf("Restoring %s Database...", app)
+	log.Printf("Restoring %s Database...", app)
 
-    client, err := connectToServer(dbHost, remoteUser, serverPassword)
-    if err != nil {
-        return fmt.Errorf("failed to connect via SSH to %s: %v", dbHost, err)
-    }
-    defer client.Close()
+	client, err := connectToServer(dbHost, remoteUser, serverPassword)
+	if err != nil {
+		return fmt.Errorf("failed to connect via SSH to %s: %v", dbHost, err)
+	}
+	defer client.Close()
 
-    date, timeStr := getCurrentDateTime()
+	date, timeStr := getCurrentDateTime()
 
-    switch dbKind {
-    case "org.postgresql.Driver":
-        // Handle PostgreSQL restoration
-        if err := restorePostgresDatabase(dbHost, dbUser, dbPass, dbName, dbTmp, dbTmp2, remoteUser, serverPassword, baseUrl, tempRestoreFolder); err != nil {
+	switch dbKind {
+	case "org.postgresql.Driver":
+		// Handle PostgreSQL restoration
+		if err := restorePostgresDatabase(dbHost, dbUser, dbPass, dbName, dbTmp, dbTmp2, remoteUser, serverPassword, baseUrl, tempRestoreFolder); err != nil {
 			return fmt.Errorf("PostgreSQL %s database restore failed: %v", app, err)
-        }
-        if err := switchPostgresTables(app, dbHost, dbPort, dbUser, dbPass, dbTmp2, dbName, baseUrl, remoteTempFolder); err != nil {
-            return fmt.Errorf("PostgreSQL table switching for %s failed: %v", app, err)
-        }
-    case "com.microsoft.sqlserver.jdbc.SQLServerDriver":
-        // Detect OS (Linux or Windows)
-        osType, err := detectSQLServerOS(dbHost, remoteUser, serverPassword)
-        if err != nil {
-            return fmt.Errorf("failed to detect SQL Server OS: %v", err)
-        }
+		}
+		if err := switchPostgresTables(app, dbHost, dbPort, dbUser, dbPass, dbTmp2, dbName, baseUrl, remoteTempFolder); err != nil {
+			return fmt.Errorf("PostgreSQL table switching for %s failed: %v", app, err)
+		}
+	case "com.microsoft.sqlserver.jdbc.SQLServerDriver":
+		// Detect OS (Linux or Windows)
+		osType, err := detectSQLServerOS(dbHost, remoteUser, serverPassword)
+		if err != nil {
+			return fmt.Errorf("failed to detect SQL Server OS: %v", err)
+		}
 
-        // Handle SQL Server restoration based on OS type
-        if osType == "linux" {
-            if err := restoreSQLServerOnLinuxDBSwitch(dbHost, dbPort, dbUser, dbPass, dbName, dbTmp, remoteUser, serverPassword); err != nil {
-                return fmt.Errorf("SQL Server (Linux) %s database restore failed: %v", app, err)
-            }
-        } else if osType == "windows" {
+		// Handle SQL Server restoration based on OS type
+		if osType == "linux" {
+			if err := restoreSQLServerOnLinuxDBSwitch(dbHost, dbPort, dbUser, dbPass, dbName, dbTmp, remoteUser, serverPassword); err != nil {
+				return fmt.Errorf("SQL Server (Linux) %s database restore failed: %v", app, err)
+			}
+		} else if osType == "windows" {
 			// Assuming you already have the correct values for dbFilePath, tempRestoreFolder, and appType:
 			if err := restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, dbTmp, tempRestoreFolder, remoteUser, serverPassword, app, date, timeStr); err != nil {
 				return fmt.Errorf("SQL Server (Windows) %s database restore failed: %v", app, err)
 			}
-        }
+		}
 
-        if err := switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTempFolder, baseUrl, osType, serverPassword, remoteUser, date, timeStr); err != nil {
-            return fmt.Errorf("SQL Server table switching for %s failed: %v", app, err)
-        }
-    case "mysql":
-        return fmt.Errorf("MySQL restoration for %s is not yet implemented", app)
-    case "oracle":
-        return fmt.Errorf("Oracle restoration for %s is not yet implemented", app)
-    default:
-        return fmt.Errorf("unsupported database type: %s for %s", dbKind, app)
-    }
+		if err := switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTempFolder, baseUrl, osType, serverPassword, remoteUser, date, timeStr); err != nil {
+			return fmt.Errorf("SQL Server table switching for %s failed: %v", app, err)
+		}
+	case "mysql":
+		return fmt.Errorf("MySQL restoration for %s is not yet implemented", app)
+	case "oracle":
+		return fmt.Errorf("Oracle restoration for %s is not yet implemented", app)
+	default:
+		return fmt.Errorf("unsupported database type: %s for %s", dbKind, app)
+	}
 
-    return nil
+	return nil
 }
 
 // RestoreEazyBI handles the restoration process for the eazyBI databases.
 func RestoreEazyBI(envName, dbKind, eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, remoteUser, serverPassword, remoteTempFolder, eazybiDbFilePath string) error {
-    log.Printf("Restoring Eazybi Database...")
+	log.Printf("Restoring Eazybi Database...")
 
-    client, err := connectToServer(eazybiDbHost, remoteUser, serverPassword)
-    if err != nil {
-        return fmt.Errorf("failed to connect via SSH to %s: %v", eazybiDbHost, err)
-    }
-    defer client.Close()
+	client, err := connectToServer(eazybiDbHost, remoteUser, serverPassword)
+	if err != nil {
+		return fmt.Errorf("failed to connect via SSH to %s: %v", eazybiDbHost, err)
+	}
+	defer client.Close()
 
-    switch dbKind {
-    case "org.postgresql.Driver":
-        // Handle PostgreSQL restoration
-        if eazybiDbName != "" {
-            if err := restorePostgresEazyBIDatabase(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, dbTmpEazybi, eazybiDbName, remoteUser, serverPassword, remoteTempFolder, tempRestoreFolder, eazybiDbFilePath); err != nil {
-                return fmt.Errorf("PostgreSQL eazyBI database restore failed: %v", err)
-            }
-        }
-    case "com.microsoft.sqlserver.jdbc.SQLServerDriver":
-        // Detect OS (Linux or Windows)
-        osType, err := detectSQLServerOS(eazybiDbHost, remoteUser, serverPassword)
-        if err != nil {
-            return fmt.Errorf("failed to detect SQL Server OS: %v", err)
-        }
+	switch dbKind {
+	case "org.postgresql.Driver":
+		// Handle PostgreSQL restoration
+		if eazybiDbName != "" {
+			if err := restorePostgresEazyBIDatabase(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, dbTmpEazybi, eazybiDbName, remoteUser, serverPassword, remoteTempFolder, tempRestoreFolder, eazybiDbFilePath); err != nil {
+				return fmt.Errorf("PostgreSQL eazyBI database restore failed: %v", err)
+			}
+		}
+	case "com.microsoft.sqlserver.jdbc.SQLServerDriver":
+		// Detect OS (Linux or Windows)
+		osType, err := detectSQLServerOS(eazybiDbHost, remoteUser, serverPassword)
+		if err != nil {
+			return fmt.Errorf("failed to detect SQL Server OS: %v", err)
+		}
 
-        // Handle SQL Server restoration based on OS type
-        if osType == "linux" {
-            if err := restoreSQLServerEazyBIOnLinux(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, eazybiDbFilePath, remoteUser, serverPassword); err != nil {
-                return fmt.Errorf("SQL Server (Linux) eazyBI database restore failed: %v", err)
-            }
-        } else if osType == "windows" {
-            if err := restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, eazybiDbFilePath, remoteUser, serverPassword); err != nil {
-                return fmt.Errorf("SQL Server (Windows) eazyBI database restore failed: %v", err)
-            }
-        }
-    case "mysql":
-        return fmt.Errorf("MySQL restoration is not yet implemented")
-    case "oracle":
-        return fmt.Errorf("Oracle restoration is not yet implemented")
-    default:
-        return fmt.Errorf("unsupported database type: %s", dbKind)
-    }
+		// Handle SQL Server restoration based on OS type
+		if osType == "linux" {
+			if err := restoreSQLServerEazyBIOnLinux(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, eazybiDbFilePath, remoteUser, serverPassword); err != nil {
+				return fmt.Errorf("SQL Server (Linux) eazyBI database restore failed: %v", err)
+			}
+		} else if osType == "windows" {
+			if err := restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, eazybiDbFilePath, remoteUser, serverPassword); err != nil {
+				return fmt.Errorf("SQL Server (Windows) eazyBI database restore failed: %v", err)
+			}
+		}
+	case "mysql":
+		return fmt.Errorf("MySQL restoration is not yet implemented")
+	case "oracle":
+		return fmt.Errorf("Oracle restoration is not yet implemented")
+	default:
+		return fmt.Errorf("unsupported database type: %s", dbKind)
+	}
 
-    return nil
+	return nil
 }
 
 // restorePostgresDatabase restores the Jira PostgreSQL database.
 func restorePostgresDatabase(dbHost, dbUser, dbPass, dbName, dbTmp, dbTmp2, remoteUser, serverPassword, baseUrl, remoteTempFolder string) error {
-	
+
 	envVars := map[string]string{"PGPASSWORD": dbPass}
 
 	// Dynamically find the full path to psql
@@ -193,12 +192,12 @@ func restorePostgresEazyBIDatabase(eazybidbHost, eazybiDbPort, eazybidbUser, eaz
 		fmt.Sprintf(`%s -U %s -h %s -p %s -d postgres -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = '%s';"`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName),
 		fmt.Sprintf(`%s -U %s -h %s -p %s -d postgres -c "ALTER DATABASE %s RENAME TO %s;"`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, dbTmpEazybi),
 		fmt.Sprintf(`%s -U %s -h %s -p %s -d postgres -c "CREATE DATABASE %s WITH OWNER = %s ENCODING = 'UTF8' LC_COLLATE = 'en_US.UTF-8' LC_CTYPE = 'en_US.UTF-8';"`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, eazybidbUser),
-		fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -f %s`,psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, eazybiDbFilePath),
+		fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -f %s`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, eazybiDbFilePath),
 		fmt.Sprintf(`%s -U %s -h %s -p %s -d postgres -c "GRANT ALL PRIVILEGES ON DATABASE %s TO %s;"`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, eazybidbUser),
 		fmt.Sprintf(`%s -U %s -h %s -p %s -d postgres -c "ALTER DATABASE %s OWNER TO %s;"`, psqlPath, eazybidbUser, eazybidbHost, eazybiDbPort, eazybidbName, eazybidbUser),
 	}
 
-	if err := executeCommandsWithPassword(commands,envVars); err != nil {
+	if err := executeCommandsWithPassword(commands, envVars); err != nil {
 		return fmt.Errorf("failed to restore PostgreSQL eazyBI database: %v", err)
 	}
 
@@ -212,7 +211,7 @@ func restorePostgresEazyBIDatabase(eazybidbHost, eazybiDbPort, eazybidbUser, eaz
 	if strings.TrimSpace(output) == "t" {
 		log.Println("system_settings table exists, proceeding with the restore.")
 
-		dumpCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -t system_settings > /tmp/system_settings.sql`,pgdumpPath, eazybidbUser, eazybidbHost, eazybiDbPort, dbTmpEazybi)
+		dumpCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -t system_settings > /tmp/system_settings.sql`, pgdumpPath, eazybidbUser, eazybidbHost, eazybiDbPort, dbTmpEazybi)
 		if err := runCommandRestore(dumpCmd, envVars); err != nil {
 			return fmt.Errorf("failed to dump system_settings table: %v", err)
 		}
@@ -231,7 +230,7 @@ func restorePostgresEazyBIDatabase(eazybidbHost, eazybiDbPort, eazybidbUser, eaz
 	}
 
 	log.Println("PostgreSQL eazyBI Database restored successfully.")
-	
+
 	// Clean up temporary files
 	removeTempCmd := fmt.Sprintf("rm -rf /tmp/system_settings.sql")
 	if err := runCommandRestore(removeTempCmd, nil); err != nil {
@@ -243,78 +242,78 @@ func restorePostgresEazyBIDatabase(eazybidbHost, eazybiDbPort, eazybidbUser, eaz
 
 // switchPostgresTables handles table switching for PostgreSQL for multiple apps.
 func switchPostgresTables(app, dbHost, dbPort, dbUser, dbPass, dbTmp2, dbName, baseUrl, remoteTempFolder string) error {
-    envVars := map[string]string{"PGPASSWORD": dbPass}
+	envVars := map[string]string{"PGPASSWORD": dbPass}
 
-    // Dynamically find the full path to psql
-    psqlPath, err := exec.LookPath("psql")
-    if err != nil {
-        return fmt.Errorf("psql not found: %v", err)
-    }
+	// Dynamically find the full path to psql
+	psqlPath, err := exec.LookPath("psql")
+	if err != nil {
+		return fmt.Errorf("psql not found: %v", err)
+	}
 
-    // Fetch the table list for the app
-    tables, exists := appTableMap[app]
-    if !exists {
-        return fmt.Errorf("no table list found for app: %s", app)
-    }
+	// Fetch the table list for the app
+	tables, exists := appTableMap[app]
+	if !exists {
+		return fmt.Errorf("no table list found for app: %s", app)
+	}
 
-    for _, table := range tables {
-        checkTableCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -tAc "SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = '%s')"`, psqlPath, dbUser, dbHost, dbPort, dbTmp2, table)
-        output, err := runCommandRestoreOutput(checkTableCmd, envVars)
-        if err != nil || strings.TrimSpace(output) != "t" {
-            log.Printf("Table %s does not exist or error occurred, skipping...", table)
-            continue
-        }
+	for _, table := range tables {
+		checkTableCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -tAc "SELECT EXISTS (SELECT FROM pg_tables WHERE schemaname = 'public' AND tablename = '%s')"`, psqlPath, dbUser, dbHost, dbPort, dbTmp2, table)
+		output, err := runCommandRestoreOutput(checkTableCmd, envVars)
+		if err != nil || strings.TrimSpace(output) != "t" {
+			log.Printf("Table %s does not exist or error occurred, skipping...", table)
+			continue
+		}
 
-        dumpCmd := fmt.Sprintf(`pg_dump -U %s -h %s -p %s -d %s -t %s > /tmp/%s.sql`, dbUser, dbHost, dbPort, dbTmp2, table, table)
-        if err := runCommandRestore(dumpCmd, envVars); err != nil {
-            log.Printf("Failed to dump table %s: %v", table, err)
-            continue
-        }
+		dumpCmd := fmt.Sprintf(`pg_dump -U %s -h %s -p %s -d %s -t %s > /tmp/%s.sql`, dbUser, dbHost, dbPort, dbTmp2, table, table)
+		if err := runCommandRestore(dumpCmd, envVars); err != nil {
+			log.Printf("Failed to dump table %s: %v", table, err)
+			continue
+		}
 
-        truncateCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "TRUNCATE TABLE %s;"`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
-        dropCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "DROP TABLE IF EXISTS %s;"`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
-        restoreCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -f /tmp/%s.sql`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
+		truncateCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "TRUNCATE TABLE %s;"`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
+		dropCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "DROP TABLE IF EXISTS %s;"`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
+		restoreCmd := fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -f /tmp/%s.sql`, psqlPath, dbUser, dbHost, dbPort, dbName, table)
 
-        if err := executeCommandsWithPassword([]string{truncateCmd, dropCmd, restoreCmd}, envVars); err != nil {
-            log.Printf("Failed to switch table %s: %v", table, err)
-            continue
-        }
+		if err := executeCommandsWithPassword([]string{truncateCmd, dropCmd, restoreCmd}, envVars); err != nil {
+			log.Printf("Failed to switch table %s: %v", table, err)
+			continue
+		}
 
-        log.Printf("Table %s processed successfully.", table)
+		log.Printf("Table %s processed successfully.", table)
 
-        // Clean up temporary files
-        removeTempCmd := fmt.Sprintf("rm -rf /tmp/%s.sql", table)
-        if err := runCommandRestore(removeTempCmd, nil); err != nil {
-            log.Printf("Failed to remove temporary files: %v", err)
-        }
-    }
+		// Clean up temporary files
+		removeTempCmd := fmt.Sprintf("rm -rf /tmp/%s.sql", table)
+		if err := runCommandRestore(removeTempCmd, nil); err != nil {
+			log.Printf("Failed to remove temporary files: %v", err)
+		}
+	}
 
-    // Base URL update logic for Jira and Confluence
-    var baseUrlCmd string
+	// Base URL update logic for Jira and Confluence
+	var baseUrlCmd string
 
-    if app == "Jira" {
-        // Jira specific base URL update
-        baseUrlCmd = fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "UPDATE propertystring SET propertyvalue = '%s' FROM propertyentry PE WHERE PE.id = propertystring.id AND PE.property_key = 'jira.baseurl';"`, psqlPath, dbUser, dbHost, dbPort, dbName, baseUrl)
-    } else if app == "Confluence" {
-        // Confluence specific base URL update
-        baseUrlCmd = fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "UPDATE BANDANA SET BANDANAVALUE = REPLACE(BANDANAVALUE, '<baseUrl>.*</baseUrl>', '<baseUrl>%s</baseUrl>') WHERE BANDANACONTEXT = '_GLOBAL' AND BANDANAKEY = 'atlassian.confluence.settings';"`, psqlPath, dbUser, dbHost, dbPort, dbName, baseUrl)
-    } else {
-        return fmt.Errorf("unsupported application: %s", app)
-    }
+	if app == "Jira" {
+		// Jira specific base URL update
+		baseUrlCmd = fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "UPDATE propertystring SET propertyvalue = '%s' FROM propertyentry PE WHERE PE.id = propertystring.id AND PE.property_key = 'jira.baseurl';"`, psqlPath, dbUser, dbHost, dbPort, dbName, baseUrl)
+	} else if app == "Confluence" {
+		// Confluence specific base URL update
+		baseUrlCmd = fmt.Sprintf(`%s -U %s -h %s -p %s -d %s -c "UPDATE BANDANA SET BANDANAVALUE = REPLACE(BANDANAVALUE, '<baseUrl>.*</baseUrl>', '<baseUrl>%s</baseUrl>') WHERE BANDANACONTEXT = '_GLOBAL' AND BANDANAKEY = 'atlassian.confluence.settings';"`, psqlPath, dbUser, dbHost, dbPort, dbName, baseUrl)
+	} else {
+		return fmt.Errorf("unsupported application: %s", app)
+	}
 
-    // Execute the base URL update command
-    if err := runCommandRestore(baseUrlCmd, envVars); err != nil {
-        return fmt.Errorf("failed to update base URL for %s: %v", app, err)
-    }
+	// Execute the base URL update command
+	if err := runCommandRestore(baseUrlCmd, envVars); err != nil {
+		return fmt.Errorf("failed to update base URL for %s: %v", app, err)
+	}
 
-    log.Printf("Base URL for %s changed successfully to: %s", app, baseUrl)
-    return nil
+	log.Printf("Base URL for %s changed successfully to: %s", app, baseUrl)
+	return nil
 }
 
 // restoreSQLServerOnLinuxDBSwitch restores the Jira SQL Server database.
 func restoreSQLServerOnLinuxDBSwitch(dbHost, dbPort, dbUser, dbPass, dbName, dbTmp, remoteUser, serverPassword string) error {
 	envVars := map[string]string{"MSSQL_PWD": dbPass}
-	
+
 	commands := []string{
 		fmt.Sprintf(`sqlcmd -S %s,%s -U %s -P %s -Q "ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; ALTER DATABASE [%s] MODIFY NAME = %s_old; ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; ALTER DATABASE [%s] MODIFY NAME = %s; ALTER DATABASE [%s] SET MULTI_USER;"`, dbHost, dbPort, dbUser, dbPass, dbName, dbName, dbName, dbTmp, dbTmp, dbName, dbName),
 	}
@@ -336,23 +335,23 @@ func restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, d
 	// On Windows, we assume that sqlcmd and bcp are available in the system path
 	tempRestoreFolder = `C:\\temp`
 
-    // Step 1: Detect MDF and LDF file paths from the existing database
-    mdfFile, ldfFile, mdfDirPath, ldfDirPath, err := DetectMDFLDFFiles(dbName, dbHost, dbPort, dbUser, dbPass)
-    if err != nil {
-        return fmt.Errorf("failed to detect MDF and LDF files: %v", err)
-    }
+	// Step 1: Detect MDF and LDF file paths from the existing database
+	mdfFile, ldfFile, mdfDirPath, ldfDirPath, err := DetectMDFLDFFiles(dbName, dbHost, dbPort, dbUser, dbPass)
+	if err != nil {
+		return fmt.Errorf("failed to detect MDF and LDF files: %v", err)
+	}
 
-    // Use MDF and LDF paths
-    log.Printf("Detected MDF file: %s, LDF file: %s", mdfFile, ldfFile)
+	// Use MDF and LDF paths
+	log.Printf("Detected MDF file: %s, LDF file: %s", mdfFile, ldfFile)
 
-    dataLogicalName, logLogicalName, err := DetectLogicalNamesFromBackup(remoteUser, serverPassword, dbTmp, dbHost, dbPort, dbUser, dbPass)
-    if err != nil {
-        return fmt.Errorf("failed to detect logical names from backup: %v", err)
-    }
-    log.Printf("Detected logical data name: %s, logical log name: %s", dataLogicalName, logLogicalName)
+	dataLogicalName, logLogicalName, err := DetectLogicalNamesFromBackup(remoteUser, serverPassword, dbTmp, dbHost, dbPort, dbUser, dbPass)
+	if err != nil {
+		return fmt.Errorf("failed to detect logical names from backup: %v", err)
+	}
+	log.Printf("Detected logical data name: %s, logical log name: %s", dataLogicalName, logLogicalName)
 
-    // Step 3: Set the original database to SINGLE_USER and rename the databases
-    sqlCmd := fmt.Sprintf(`
+	// Step 3: Set the original database to SINGLE_USER and rename the databases
+	sqlCmd := fmt.Sprintf(`
         sqlcmd -S %s,%s -U %s -P %s -Q "
         ALTER DATABASE [%s] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
         ALTER DATABASE [%s] MODIFY NAME = [%s_%s_%s];
@@ -360,18 +359,18 @@ func restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, d
         ALTER DATABASE [%s] MODIFY NAME = [%s];
         ALTER DATABASE [%s] SET OFFLINE WITH ROLLBACK IMMEDIATE;
         ALTER DATABASE [%s_%s_%s] SET OFFLINE WITH ROLLBACK IMMEDIATE;"`,
-        dbHost, dbPort, dbUser, dbPass, dbName, 
-        dbName, dbName, date, timeStr, 
-        dbTmp, dbTmp, dbName, dbName, 
-        dbName, date, timeStr)
+		dbHost, dbPort, dbUser, dbPass, dbName,
+		dbName, dbName, date, timeStr,
+		dbTmp, dbTmp, dbName, dbName,
+		dbName, date, timeStr)
 
-    // Execute the SQL commands for renaming and setting the databases offline
-    if err := runCommand(sqlCmd, nil); err != nil {
-        return fmt.Errorf("failed to execute SQL commands for database renaming: %v", err)
-    }
+	// Execute the SQL commands for renaming and setting the databases offline
+	if err := runCommand(sqlCmd, nil); err != nil {
+		return fmt.Errorf("failed to execute SQL commands for database renaming: %v", err)
+	}
 
 	// Step 4: Rename MDF/LDF files using PowerShell
-	powershellScript := fmt.Sprintf(`try { Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s_%s_%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_%s_%s_log.ldf' -ErrorAction Stop; Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_log.ldf' -ErrorAction Stop; Write-Host 'Files renamed successfully.' } catch { Write-Host 'Error renaming files: ' $_; exit 1; }`, 
+	powershellScript := fmt.Sprintf(`try { Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s_%s_%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_%s_%s_log.ldf' -ErrorAction Stop; Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_log.ldf' -ErrorAction Stop; Write-Host 'Files renamed successfully.' } catch { Write-Host 'Error renaming files: ' $_; exit 1; }`,
 		mdfDirPath, dbName, mdfDirPath, dbName, date, timeStr,
 		ldfDirPath, dbName, ldfDirPath, dbName, date, timeStr,
 		mdfDirPath, dbTmp, mdfDirPath, dbName,
@@ -387,8 +386,8 @@ func restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, d
 		return fmt.Errorf("failed to rename MDF and LDF files via PowerShell: %v", err)
 	}
 
-    // Step 5: Modify MDF/LDF paths in SQL Server and bring the databases back online
-    sqlRestoreCmd := fmt.Sprintf(`
+	// Step 5: Modify MDF/LDF paths in SQL Server and bring the databases back online
+	sqlRestoreCmd := fmt.Sprintf(`
     sqlcmd -S %s,%s -U %s -P %s -Q "
     ALTER DATABASE [%s_%s_%s] MODIFY FILE (NAME = '%s', FILENAME = '%s\%s_%s_%s.mdf');
     ALTER DATABASE [%s_%s_%s] MODIFY FILE (NAME = '%s', FILENAME = '%s\%s_%s_%s_log.ldf');
@@ -398,17 +397,17 @@ func restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, d
     ALTER DATABASE [%s] SET MULTI_USER;
     ALTER DATABASE [%s_%s_%s] SET ONLINE;
     ALTER DATABASE [%s_%s_%s] SET MULTI_USER;"`,
-        dbHost, dbPort, dbUser, dbPass,
-        dbName, date, timeStr, dataLogicalName, mdfDirPath, dbName, date, timeStr,
-        dbName, date, timeStr, logLogicalName, ldfDirPath, dbName, date, timeStr,
-        dbName, dataLogicalName, mdfDirPath, dbName,
-        dbName, logLogicalName, ldfDirPath, dbName,
-        dbName, dbName, dbName, date, timeStr, dbName, date, timeStr)
+		dbHost, dbPort, dbUser, dbPass,
+		dbName, date, timeStr, dataLogicalName, mdfDirPath, dbName, date, timeStr,
+		dbName, date, timeStr, logLogicalName, ldfDirPath, dbName, date, timeStr,
+		dbName, dataLogicalName, mdfDirPath, dbName,
+		dbName, logLogicalName, ldfDirPath, dbName,
+		dbName, dbName, dbName, date, timeStr, dbName, date, timeStr)
 
-    // Execute the SQL commands for modifying MDF/LDF paths and bringing the databases online
-    if err := runCommand(sqlRestoreCmd, nil); err != nil {
-        return fmt.Errorf("failed to modify MDF/LDF paths and bring databases online: %v", err)
-    }
+	// Execute the SQL commands for modifying MDF/LDF paths and bringing the databases online
+	if err := runCommand(sqlRestoreCmd, nil); err != nil {
+		return fmt.Errorf("failed to modify MDF/LDF paths and bring databases online: %v", err)
+	}
 
 	// Step 6: Delete the restore file from the remote server after restoration
 	remoteRestoreFile := fmt.Sprintf("%s\\%s.bak", tempRestoreFolder, dbTmp)
@@ -424,8 +423,8 @@ func restoreSQLServerOnWindowsDBSwitch(dbHost, dbUser, dbPass, dbName, dbPort, d
 	}
 
 	log.Printf("Backup of current database %s stored under new database %s on SQL Server.", dbName, dbTmp)
-    log.Printf("Database %s was successfully created and restored on SQL Server.", dbName)
-    return nil
+	log.Printf("Database %s was successfully created and restored on SQL Server.", dbName)
+	return nil
 }
 
 // restoreSQLServerEazyBIOnLinux restores the eazyBI SQL Server database.
@@ -488,10 +487,10 @@ func switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTe
 		// On Windows, we assume that sqlcmd and bcp are available in the system path
 		remoteTempFolder = `C:\\temp`
 		sqlcmdPath = `sqlcmd`
-		bcpPath =`bcp`
+		bcpPath = `bcp`
 	}
 
-	// Automatically detect the full path to sqlcmd for local process 
+	// Automatically detect the full path to sqlcmd for local process
 	sqlcmdPathLocal, err := exec.LookPath("sqlcmd")
 	if err != nil {
 		return fmt.Errorf("sqlcmd not found: %v", err)
@@ -528,19 +527,19 @@ func switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTe
 		var dumpCmd, fmtCmd string
 		if osType == "windows" {
 			// For Windows, escape backslashes in the commands
-			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s out %s\\%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`, 
+			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s out %s\\%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbName, date, timeStr, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 
 			// Create the .fmt file on the remote server
-			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s format nul -c -f %s\\%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`, 
+			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s format nul -c -f %s\\%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbName, date, timeStr, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 		} else {
 			// For Linux, normal forward slashes
-			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s out %s/%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`, 
+			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s out %s/%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbName, date, timeStr, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 
 			// Create the .fmt file on the remote server
-			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s format nul -c -f %s/%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`, 
+			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s_%s_%s.dbo.%s format nul -c -f %s/%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbName, date, timeStr, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 		}
 
@@ -553,14 +552,14 @@ func switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTe
 			log.Printf("Failed to create format file for table %s directly on SQL Server: %v", table, err)
 			continue
 		}
-		
+
 		// Truncate the existing table on SQL Server
 		truncateCmd := fmt.Sprintf(`%s -S %s,%s -U %s -P %s -d %s -Q "TRUNCATE TABLE %s;"`, sqlcmdPathLocal, dbHost, dbPort, dbUser, dbPass, dbName, table)
 		if err := runCommandRestore(truncateCmd, envVars); err != nil {
 			log.Printf("Failed to truncate table %s: %v", table, err)
 			continue
 		}
-				
+
 		// Perform the bulk insert using the .fmt file
 		var bulkInsertCmd string
 		if osType == "windows" {
@@ -587,7 +586,7 @@ func switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTe
 		} else {
 			log.Printf("Successfully removed local .bcp file for table %s.", table)
 		}
-	 
+
 		// Step 2: Clean up the remote .bcp .fmt files on the SQL Server
 		var removeRemoteBCPCmd string
 		var removeRemoteFMTCmd string
@@ -601,7 +600,7 @@ func switchSQLServerTables(app, dbHost, dbPort, dbUser, dbPass, dbName, remoteTe
 			removeRemoteFMTCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "rm -rf %s/%s.fmt"`, serverPassword, remoteUser, dbHost, remoteTempFolder, table)
 
 		}
-	 
+
 		log.Printf("Removing remote .bcp file for table %s: %s", table, removeRemoteBCPCmd)
 		if err := runCommandRestore(removeRemoteBCPCmd, envVars); err != nil {
 			log.Printf("Failed to remove remote .bcp or .fmt file for table %s: %v", table, err)
@@ -783,23 +782,19 @@ func tryWinRMRedirect(cmd string, output *bytes.Buffer) (bool, error) {
 
 // Get current date and time for file renaming
 func getCurrentDateTime() (string, string) {
-    currentTime := time.Now()
-    date := currentTime.Format("2006_01_02")
-    timeStr := currentTime.Format("15_04_05")
-    return date, timeStr
+	currentTime := time.Now()
+	date := currentTime.Format("2006_01_02")
+	timeStr := currentTime.Format("15_04_05")
+	return date, timeStr
 }
-
-
-
-
 
 // restoreSQLServerEazyBIOnWindows restores the eazyBI SQL Server database.
 func restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, eazybiDbName, dbTmpEazybi, tempRestoreFolder, dbFilePath, remoteUser, serverPassword string) error {
-	
+
 	passwordEscaped := strings.ReplaceAll(eazybiDbPass, "!", "\\!")
 	passwordEscaped = strings.ReplaceAll(passwordEscaped, "'", `'"'"'`)
 	passwordEscaped = strings.ReplaceAll(passwordEscaped, `"`, `\"`)
-	
+
 	// On Windows, we assume that sqlcmd and bcp are available in the system path
 	tempRestoreFolder = `C:\\temp`
 
@@ -856,7 +851,7 @@ func restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, e
 	}
 
 	// Step 7: Rename MDF/LDF files using PowerShell
-	powershellScript := fmt.Sprintf(`try { Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_log.ldf' -ErrorAction Stop; Write-Host 'Files renamed successfully.' } catch { Write-Host 'Error renaming files: ' $_; exit 1; }`, 
+	powershellScript := fmt.Sprintf(`try { Rename-Item -Path '%s\%s.mdf' -NewName '%s\%s.mdf' -ErrorAction Stop; Rename-Item -Path '%s\%s_log.ldf' -NewName '%s\%s_log.ldf' -ErrorAction Stop; Write-Host 'Files renamed successfully.' } catch { Write-Host 'Error renaming files: ' $_; exit 1; }`,
 		mdfDirPath, eazybiDbName, mdfDirPath, dbTmpEazybi,
 		ldfDirPath, eazybiDbName, ldfDirPath, dbTmpEazybi)
 
@@ -893,36 +888,36 @@ func restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, e
 		return fmt.Errorf("failed to restore database: %v", err)
 	}
 
-	// Pre step 10 : set backuped database online 
+	// Pre step 10 : set backuped database online
 	setOnnlineCmd := fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s powershell.exe -Command "Invoke-Sqlcmd -ServerInstance '\"%s,%s\"' -Username '\"%s\"' -Password '\"%s\"' -Query '\"ALTER DATABASE [%s] SET ONLINE WITH ROLLBACK IMMEDIATE;\"'"`,
 		serverPassword, remoteUser, eazybiDbHost, eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, dbTmpEazybi)
 	if err := runCommandRestore(setOnnlineCmd, nil); err != nil {
-			return fmt.Errorf("failed to set database offline: %v", err)
+		return fmt.Errorf("failed to set database offline: %v", err)
 	}
-		
+
 	// Step 10: Advanced eazyBI Settings Restore (system_settings table)
 	err = switchSQLServerTablesEazybi(
-		"eazyBI",				 // App name
-		eazybiDbHost,            // dbHost
-		eazybiDbPort,            // dbPort
-		eazybiDbUser,            // dbUser
-		eazybiDbPass,            // dbPass
-		eazybiDbName,            // dbName
-		dbTmpEazybi,			 // dbTmp
-		tempRestoreFolder, 		 // remoteTempFolder
-		"windows",               // osType
-		serverPassword,          // serverPassword
-		remoteUser,              // remoteUser
+		"eazyBI",          // App name
+		eazybiDbHost,      // dbHost
+		eazybiDbPort,      // dbPort
+		eazybiDbUser,      // dbUser
+		eazybiDbPass,      // dbPass
+		eazybiDbName,      // dbName
+		dbTmpEazybi,       // dbTmp
+		tempRestoreFolder, // remoteTempFolder
+		"windows",         // osType
+		serverPassword,    // serverPassword
+		remoteUser,        // remoteUser
 	)
 	if err != nil {
 		return fmt.Errorf("failed to switch tables for eazyBI: %v", err)
 	}
 
-	// Post step 10 : set backuped database offline 
+	// Post step 10 : set backuped database offline
 	setOffTMPlineCmd := fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s powershell.exe -Command "Invoke-Sqlcmd -ServerInstance '\"%s,%s\"' -Username '\"%s\"' -Password '\"%s\"' -Query '\"ALTER DATABASE [%s] SET OFFLINE WITH ROLLBACK IMMEDIATE;\"'"`,
 		serverPassword, remoteUser, eazybiDbHost, eazybiDbHost, eazybiDbPort, eazybiDbUser, eazybiDbPass, dbTmpEazybi)
 	if err := runCommandRestore(setOffTMPlineCmd, nil); err != nil {
-			return fmt.Errorf("failed to set database offline: %v", err)
+		return fmt.Errorf("failed to set database offline: %v", err)
 	}
 
 	// Step 11: Grant permissions and set database ownership
@@ -954,7 +949,6 @@ func restoreSQLServerEazyBIOnWindows(eazybiDbHost, eazybiDbPort, eazybiDbUser, e
 	return nil
 }
 
-
 // switchSQLServerTables handles the table switching for SQL Server.
 func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, dbTmpEazybi, remoteTempFolder, osType, serverPassword, remoteUser string) error {
 	envVars := map[string]string{"MSSQL_PWD": dbPass}
@@ -981,10 +975,10 @@ func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, db
 		// On Windows, we assume that sqlcmd and bcp are available in the system path
 		remoteTempFolder = `C:\\temp`
 		sqlcmdPath = `sqlcmd`
-		bcpPath =`bcp`
+		bcpPath = `bcp`
 	}
 
-	// Automatically detect the full path to sqlcmd for local process 
+	// Automatically detect the full path to sqlcmd for local process
 	sqlcmdPathLocal, err := exec.LookPath("sqlcmd")
 	if err != nil {
 		return fmt.Errorf("sqlcmd not found: %v", err)
@@ -1021,19 +1015,19 @@ func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, db
 		var dumpCmd, fmtCmd string
 		if osType == "windows" {
 			// For Windows, escape backslashes in the commands
-			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s out %s\\%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`, 
+			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s out %s\\%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbTmpEazybi, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 
 			// Create the .fmt file on the remote server
-			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s format nul -c -f %s\\%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`, 
+			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s format nul -c -f %s\\%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbTmpEazybi, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 		} else {
 			// For Linux, normal forward slashes
-			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s out %s/%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`, 
+			dumpCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s out %s/%s.bcp -c -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbTmpEazybi, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 
 			// Create the .fmt file on the remote server
-			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s format nul -c -f %s/%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`, 
+			fmtCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "%s %s.dbo.%s format nul -c -f %s/%s.fmt -t, -r \n -S %s,%s -U %s -P %s"`,
 				serverPassword, remoteUser, dbHost, bcpPath, dbTmpEazybi, table, remoteTempFolder, table, dbHost, dbPort, dbUser, dbPass)
 		}
 
@@ -1046,14 +1040,14 @@ func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, db
 			log.Printf("Failed to create format file for table %s directly on SQL Server: %v", table, err)
 			continue
 		}
-		
+
 		// Truncate the existing table on SQL Server
 		truncateCmd := fmt.Sprintf(`%s -S %s,%s -U %s -P %s -d %s -Q "TRUNCATE TABLE %s;"`, sqlcmdPathLocal, dbHost, dbPort, dbUser, dbPass, dbName, table)
 		if err := runCommandRestore(truncateCmd, envVars); err != nil {
 			log.Printf("Failed to truncate table %s: %v", table, err)
 			continue
 		}
-				
+
 		// Perform the bulk insert using the .fmt file
 		var bulkInsertCmd string
 		if osType == "windows" {
@@ -1080,7 +1074,7 @@ func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, db
 		} else {
 			log.Printf("Successfully removed local .bcp file for table %s.", table)
 		}
-	 
+
 		// Step 2: Clean up the remote .bcp .fmt files on the SQL Server
 		var removeRemoteBCPCmd string
 		var removeRemoteFMTCmd string
@@ -1094,7 +1088,7 @@ func switchSQLServerTablesEazybi(app, dbHost, dbPort, dbUser, dbPass, dbName, db
 			removeRemoteFMTCmd = fmt.Sprintf(`sshpass -p "%s" ssh -o StrictHostKeyChecking=no %s@%s "rm -rf %s/%s.fmt"`, serverPassword, remoteUser, dbHost, remoteTempFolder, table)
 
 		}
-	 
+
 		log.Printf("Removing remote .bcp file for table %s: %s", table, removeRemoteBCPCmd)
 		if err := runCommandRestore(removeRemoteBCPCmd, envVars); err != nil {
 			log.Printf("Failed to remove remote .bcp or .fmt file for table %s: %v", table, err)

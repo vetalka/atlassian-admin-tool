@@ -1,62 +1,68 @@
 package handlers
 
 import (
-    "fmt"
-    "html/template"
-    "log"
-    "net/http"
-    "strings"
+	"fmt"
+	"html/template"
+	"log"
+	"net/http"
+	"strings"
 )
 
 func HandleShowEnvironment(w http.ResponseWriter, r *http.Request) {
-    username, err := GetCurrentUsername(r)
-    if err != nil { http.Error(w, "Unauthorized", http.StatusUnauthorized); return }
-    isAdmin, err := IsAdminUser(username)
-    if err != nil { http.Error(w, "Failed to check user permissions", http.StatusInternalServerError); return }
+	username, err := GetCurrentUsername(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin, err := IsAdminUser(username)
+	if err != nil {
+		http.Error(w, "Failed to check user permissions", http.StatusInternalServerError)
+		return
+	}
 
-    environmentName := strings.TrimPrefix(r.URL.Path, "/environment/show/")
-    environmentName = strings.TrimSpace(environmentName)
+	environmentName := strings.TrimPrefix(r.URL.Path, "/environment/show/")
+	environmentName = strings.TrimSpace(environmentName)
 
-    query := `SELECT name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir,
+	query := `SELECT name, ip, server_user, server_password, install_dir, home_dir, sharedhome_dir,
                      app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost, db_driver,
                      eazybi_dbname, eazybi_dbuser, eazybi_dbpass, eazybi_dbport, eazybi_dbhost, base_url,
                      COALESCE(db_connection_type, 'ssh'), COALESCE(db_server_user, ''), COALESCE(db_server_password, '')
               FROM environments WHERE name = ?`
 
-    var (
-        name, ip, serverUser, serverPasswordHash, installDir, homeDir, sharedHomeDir,
-        dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
-        eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseUrl,
-        dbConnType, dbServerUser, dbServerPass string
-    )
+	var (
+		name, ip, serverUser, serverPasswordHash, installDir, homeDir, sharedHomeDir,
+		dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
+		eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost, baseUrl,
+		dbConnType, dbServerUser, dbServerPass string
+	)
 
-    err = db.QueryRow(query, environmentName).Scan(&name, &ip, &serverUser, &serverPasswordHash, &installDir, &homeDir, &sharedHomeDir,
-        &dbName, &dbUser, &dbPass, &dbPort, &dbHost, &dbDriver,
-        &eazybiDBName, &eazybiDBUser, &eazybiDBPass, &eazybiDBPort, &eazybiDBHost, &baseUrl,
-        &dbConnType, &dbServerUser, &dbServerPass)
-    if err != nil {
-        log.Printf("Failed to fetch environment details: %v", err)
-        http.Error(w, "Environment not found", http.StatusNotFound)
-        return
-    }
+	err = db.QueryRow(query, environmentName).Scan(&name, &ip, &serverUser, &serverPasswordHash, &installDir, &homeDir, &sharedHomeDir,
+		&dbName, &dbUser, &dbPass, &dbPort, &dbHost, &dbDriver,
+		&eazybiDBName, &eazybiDBUser, &eazybiDBPass, &eazybiDBPort, &eazybiDBHost, &baseUrl,
+		&dbConnType, &dbServerUser, &dbServerPass)
+	if err != nil {
+		log.Printf("Failed to fetch environment details: %v", err)
+		http.Error(w, "Environment not found", http.StatusNotFound)
+		return
+	}
 
-    // Compute display values for DB server connection
-    connTypeLozenge := "ads-lozenge-default"
-    connTypeLabel := "SSH"
-    if dbConnType == "winrm" {
-        connTypeLozenge = "ads-lozenge-info"
-        connTypeLabel = "WinRM"
-    }
-    dbServerUserDisplay := dbServerUser
-    if dbServerUserDisplay == "" {
-        dbServerUserDisplay = "—"
-    }
-    dbServerPassDisplay := "Not set"
-    if dbServerPass != "" {
-        dbServerPassDisplay = "Configured"
-    }
+	// Compute display values for DB server connection
+	connTypeLozenge := "ads-lozenge-default"
+	connTypeLabel := "SSH"
+	if dbConnType == "winrm" {
+		connTypeLozenge = "ads-lozenge-info"
+		connTypeLabel = "WinRM"
+	}
+	dbServerUserDisplay := dbServerUser
+	if dbServerUserDisplay == "" {
+		dbServerUserDisplay = "—"
+	}
+	dbServerPassDisplay := "Not set"
+	if dbServerPass != "" {
+		dbServerPassDisplay = "Configured"
+	}
 
-    content := fmt.Sprintf(`
+	content := fmt.Sprintf(`
         <div class="ads-page-centered">
             <div class="ads-page-content" style="max-width: 800px;">
                 <div class="ads-page-header">
@@ -114,10 +120,10 @@ func HandleShowEnvironment(w http.ResponseWriter, r *http.Request) {
                 </div>
             </div>
         </div>`, name, name, ip, serverUser, installDir, homeDir, sharedHomeDir, baseUrl,
-        dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
-        eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost,
-        connTypeLozenge, connTypeLabel, dbServerUserDisplay, dbServerPassDisplay,
-        name, name)
+		dbName, dbUser, dbPass, dbPort, dbHost, dbDriver,
+		eazybiDBName, eazybiDBUser, eazybiDBPass, eazybiDBPort, eazybiDBHost,
+		connTypeLozenge, connTypeLabel, dbServerUserDisplay, dbServerPassDisplay,
+		name, name)
 
-    RenderPage(w, PageData{Title: "Parameters", IsAdmin: isAdmin, Content: template.HTML(content)})
+	RenderPage(w, PageData{Title: "Parameters", IsAdmin: isAdmin, Content: template.HTML(content)})
 }

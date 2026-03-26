@@ -5,16 +5,20 @@ import (
 	"context"             // For context cancellation
 	"log"                 // For logging messages
 	"net/http"
-	"os"                  // For OS-related functionality like signal handling
-	"os/signal"           // For signal handling
-	"syscall"             // For handling system calls (like SIGINT and SIGTERM)
-	"time"                // For setting timeouts
+	"os"        // For OS-related functionality like signal handling
+	"os/signal" // For signal handling
+	"syscall"   // For handling system calls (like SIGINT and SIGTERM)
+	"time"      // For setting timeouts
 )
 
 func main() {
 	// Initialize the database
 	handlers.InitDB("/adminToolBackupDirectory/environment.db")
 	defer handlers.CloseDB()
+
+	// Start the cron backup scheduler
+	handlers.InitScheduler()
+	defer handlers.StopScheduler()
 
 	// Set up routes
 	http.HandleFunc("/login", handlers.HandleLogin)
@@ -25,7 +29,7 @@ func main() {
 	// Routes for SSO login, callback, and logout
 	http.HandleFunc("/sso-login", handlers.HandleSSOLogin)
 	http.HandleFunc("/sso-callback", handlers.HandleSSOCallback) // Called by IdP after successful login
-	http.HandleFunc("/logout-sso", handlers.HandleSSOLogout) // Handle SSO and app logout
+	http.HandleFunc("/logout-sso", handlers.HandleSSOLogout)     // Handle SSO and app logout
 
 	// Serve favicon separately as a PNG
 	http.HandleFunc("/favicon.ico", func(w http.ResponseWriter, r *http.Request) {
@@ -202,14 +206,14 @@ func main() {
 	)))
 
 	/*
-	// Not in use anable only if will integrate ldap connection
-	http.Handle("/settings/user-directories/add", handlers.SetupMiddleware(handlers.AuthMiddleware(
-		handlers.AdminOnlyMiddleware(handlers.HandleAddUserDirectory),
-	)))
+		// Not in use anable only if will integrate ldap connection
+		http.Handle("/settings/user-directories/add", handlers.SetupMiddleware(handlers.AuthMiddleware(
+			handlers.AdminOnlyMiddleware(handlers.HandleAddUserDirectory),
+		)))
 
-	http.Handle("/settings/user-directories/edit", handlers.SetupMiddleware(handlers.AuthMiddleware(
-		handlers.AdminOnlyMiddleware(handlers.HandleEditUserDirectory),
-	)))
+		http.Handle("/settings/user-directories/edit", handlers.SetupMiddleware(handlers.AuthMiddleware(
+			handlers.AdminOnlyMiddleware(handlers.HandleEditUserDirectory),
+		)))
 	*/
 
 	// Route for updating the license under /settings/updatelicense
@@ -234,6 +238,32 @@ func main() {
 		handlers.AdminOnlyMiddleware(handlers.HandleChangeJVMMax()),
 	)))
 
+	// ── Cron backup scheduler routes ──────────────────────────────────────────
+	http.Handle("/cron/policies/create", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCreatePolicy),
+	)))
+	http.Handle("/cron/policies/update/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleUpdatePolicy),
+	)))
+	http.Handle("/cron/policies/delete/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleDeletePolicy),
+	)))
+	http.Handle("/cron/policies/toggle/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleTogglePolicy),
+	)))
+	http.Handle("/cron/policies/run/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleRunNow),
+	)))
+	http.Handle("/cron/policies/logs/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleGetLogs),
+	)))
+	http.Handle("/cron/policies/runs/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleGetRunDetail),
+	)))
+	http.Handle("/cron/policies", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleListPolicies),
+	)))
+
 	// Route for cleanup backups
 	//http.HandleFunc("/cleanup-backups", handlers.SetupMiddleware(handlers.AuthMiddleware(handlers.HandleCleanupBackupsPage)))
 	http.Handle("/cleanup-backups", handlers.SetupMiddleware(handlers.AuthMiddleware(
@@ -247,46 +277,46 @@ func main() {
 	)))
 
 	/*
-	// Route for popup message
-	http.HandleFunc("/sse-backup-restore", handlers.HandleSSEBackupRestore)
+		// Route for popup message
+		http.HandleFunc("/sse-backup-restore", handlers.HandleSSEBackupRestore)
 	*/
-	
+
 	// Start the server
-	    // Create a new HTTP server instance
-    srv := &http.Server{
-        Addr:    ":8000",
-        Handler: nil, // Use the default ServeMux
-    }
+	// Create a new HTTP server instance
+	srv := &http.Server{
+		Addr:    ":8000",
+		Handler: nil, // Use the default ServeMux
+	}
 
-    // Run server in a goroutine so that it doesn't block
-    go func() {
-        log.Println("Server is running on http://localhost:8000")
-        if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-            log.Fatalf("Server failed: %v", err)
-        }
-    }()
+	// Run server in a goroutine so that it doesn't block
+	go func() {
+		log.Println("Server is running on http://localhost:8000")
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed: %v", err)
+		}
+	}()
 
-    // Set up a channel to listen for interrupt or terminate signals
-    quit := make(chan os.Signal, 1)
-    signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	// Set up a channel to listen for interrupt or terminate signals
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-    // Block until a signal is received
-    <-quit
-    log.Println("Shutting down the server...")
+	// Block until a signal is received
+	<-quit
+	log.Println("Shutting down the server...")
 
-    // Create a context with a timeout to gracefully shut down the server
-    ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-    defer cancel()
+	// Create a context with a timeout to gracefully shut down the server
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-    // Shut down the server gracefully
-    if err := srv.Shutdown(ctx); err != nil {
-        log.Fatalf("Server forced to shutdown: %v", err)
-    }
+	// Shut down the server gracefully
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v", err)
+	}
 
-    log.Println("Server exiting.")
+	log.Println("Server exiting.")
 }
 
 func homeHandler(w http.ResponseWriter, r *http.Request) {
-    // Serve your HTML template here
-    http.ServeFile(w, r, "templates/favicon.html")
+	// Serve your HTML template here
+	http.ServeFile(w, r, "templates/favicon.html")
 }

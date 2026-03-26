@@ -68,7 +68,6 @@ func BackupNFS(client *ssh.Client, sharedHomeDir, homeDir, backupDir, app string
 	return nil
 }
 
-
 // BackupAttachments backs up the attachments from either shared home or home directory for both Jira and Confluence.
 func BackupAttachments(client *ssh.Client, sharedHomeDir, homeDir, backupDir, app string) error {
 	var sourceDir string
@@ -126,5 +125,3 @@ func BackupAttachments(client *ssh.Client, sharedHomeDir, homeDir, backupDir, ap
 	log.Printf("Backup completed for %s attachments from %s to %s.", app, sourceDir, backupFilePath)
 	return nil
 }
-
-

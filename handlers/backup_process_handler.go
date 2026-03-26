@@ -1,20 +1,19 @@
 package handlers
 
 import (
-    "fmt"
-    "html"
-    "html/template"
-    "net/http"
-    "log"
+	"fmt"
+	"html"
+	"html/template"
+	"log"
+	"net/http"
 )
-
 
 // HandleBackupProgress serves the backup progress page with a progress bar
 func HandleBackupProgress(w http.ResponseWriter, r *http.Request) {
-    environmentName := extractEnvironmentName(r.URL.Path)
-    sanitizedEnv := html.EscapeString(environmentName)
+	environmentName := extractEnvironmentName(r.URL.Path)
+	sanitizedEnv := html.EscapeString(environmentName)
 
-    extraHead := template.HTML(fmt.Sprintf(`
+	extraHead := template.HTML(fmt.Sprintf(`
     <style>
         .progress-container {
             width: 100%%;
@@ -123,7 +122,7 @@ func HandleBackupProgress(w http.ResponseWriter, r *http.Request) {
         updateProgress();
     </script>`, sanitizedEnv))
 
-    content := fmt.Sprintf(`
+	content := fmt.Sprintf(`
         <div class="ads-page-centered"><div class="ads-page-content"><div class="ads-breadcrumbs">
             <a href="/">Environments</a> →
             <a href="/environment/%s">%s</a> →
@@ -165,25 +164,24 @@ func HandleBackupProgress(w http.ResponseWriter, r *http.Request) {
     </div></div>
     `, sanitizedEnv, sanitizedEnv, sanitizedEnv, sanitizedEnv, sanitizedEnv)
 
-    username, _ := GetCurrentUsername(r)
-    isAdmin, _ := IsAdminUser(username)
+	username, _ := GetCurrentUsername(r)
+	isAdmin, _ := IsAdminUser(username)
 
-    RenderPage(w, PageData{
-        Title:     "Backup Progress - " + environmentName,
-        IsAdmin:   isAdmin,
-        ExtraHead: extraHead,
-        Content:   template.HTML(content),
-    })
+	RenderPage(w, PageData{
+		Title:     "Backup Progress - " + environmentName,
+		IsAdmin:   isAdmin,
+		ExtraHead: extraHead,
+		Content:   template.HTML(content),
+	})
 }
 
-
 func HandleBackupStatus(w http.ResponseWriter, r *http.Request) {
-    environmentName := extractEnvironmentName(r.URL.Path)
-    progress, message := GetTaskStatus(environmentName)
+	environmentName := extractEnvironmentName(r.URL.Path)
+	progress, message := GetTaskStatus(environmentName)
 
-    // Log current status before responding
-    log.Printf("Current status for %s: Progress=%d, Message=%s", environmentName, progress, message)
+	// Log current status before responding
+	log.Printf("Current status for %s: Progress=%d, Message=%s", environmentName, progress, message)
 
-    w.Header().Set("Content-Type", "application/json")
-    fmt.Fprintf(w, `{"progress": %d, "message": "%s"}`, progress, message)
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"progress": %d, "message": "%s"}`, progress, message)
 }

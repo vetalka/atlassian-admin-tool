@@ -1,15 +1,15 @@
 package handlers
 
 import (
-    "fmt"
-    "log"
-    "net/http"
+	"fmt"
+	"log"
+	"net/http"
 )
 
 // HandleUserCreation handles the creation of a new user
 func HandleUserCreation(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        html := `
+	if r.Method == http.MethodGet {
+		html := `
         <!DOCTYPE html>
         <html lang="en">
         <head>
@@ -33,24 +33,24 @@ func HandleUserCreation(w http.ResponseWriter, r *http.Request) {
         </body>
         </html>
         `
-        fmt.Fprintln(w, html)
-    } else if r.Method == http.MethodPost {
-        username := r.FormValue("username")
-        password := r.FormValue("password")
+		fmt.Fprintln(w, html)
+	} else if r.Method == http.MethodPost {
+		username := r.FormValue("username")
+		password := r.FormValue("password")
 
-        passwordHash, err := hashPassword(password)
-        if err != nil {
-            http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-            return
-        }
+		passwordHash, err := hashPassword(password)
+		if err != nil {
+			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+			return
+		}
 
-        _, err = db.Exec("INSERT INTO users (username, password, directory, groups) VALUES (?, ?, ?, ?)", username, passwordHash, "Local Directory", "administrators")
-        if err != nil {
-            log.Printf("Failed to create user: %v", err)
-            http.Error(w, "User creation failed", http.StatusBadRequest)
-            return
-        }
+		_, err = db.Exec("INSERT INTO users (username, password, directory, groups) VALUES (?, ?, ?, ?)", username, passwordHash, "Local Directory", "administrators")
+		if err != nil {
+			log.Printf("Failed to create user: %v", err)
+			http.Error(w, "User creation failed", http.StatusBadRequest)
+			return
+		}
 
-        http.Redirect(w, r, "/login", http.StatusSeeOther)
-    }
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+	}
 }

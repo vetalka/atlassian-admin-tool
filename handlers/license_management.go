@@ -1,85 +1,85 @@
 package handlers
 
 import (
-    "database/sql"
-    "fmt"
-    "html"
-    "html/template"
-    "log"
-    "net/http"
-    "strings"
-    "time"
+	"database/sql"
+	"fmt"
+	"html"
+	"html/template"
+	"log"
+	"net/http"
+	"strings"
+	"time"
 )
 
 func HandleDisplayLicense(w http.ResponseWriter, r *http.Request) {
-    if r.Method == http.MethodGet {
-        displayLicenseForm(w, r)
-    } else if r.Method == http.MethodPost {
-        updateLicense(w, r)
-    }
+	if r.Method == http.MethodGet {
+		displayLicenseForm(w, r)
+	} else if r.Method == http.MethodPost {
+		updateLicense(w, r)
+	}
 }
 
 func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
-    var expiryDate string
+	var expiryDate string
 
-    username, err := GetCurrentUsername(r)
-    if err != nil {
-        http.Error(w, "Unauthorized", http.StatusUnauthorized)
-        return
-    }
-    isAdmin, _ := IsAdminUser(username)
+	username, err := GetCurrentUsername(r)
+	if err != nil {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	isAdmin, _ := IsAdminUser(username)
 
-    err = db.QueryRow("SELECT expiry_date FROM license ORDER BY id DESC LIMIT 1").Scan(&expiryDate)
-    if err != nil {
-        if err == sql.ErrNoRows {
-            expiryDate = "N/A"
-        } else {
-            log.Printf("Error querying license: %v", err)
-            http.Error(w, "Failed to load current license", http.StatusInternalServerError)
-            return
-        }
-    }
+	err = db.QueryRow("SELECT expiry_date FROM license ORDER BY id DESC LIMIT 1").Scan(&expiryDate)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			expiryDate = "N/A"
+		} else {
+			log.Printf("Error querying license: %v", err)
+			http.Error(w, "Failed to load current license", http.StatusInternalServerError)
+			return
+		}
+	}
 
-    // Calculate days remaining and status
-    statusClass := "ads-lozenge-success"
-    statusText := "ACTIVE"
-    daysRemaining := ""
-    statusBarColor := "#36B37E"
-    statusBarWidth := "100"
+	// Calculate days remaining and status
+	statusClass := "ads-lozenge-success"
+	statusText := "ACTIVE"
+	daysRemaining := ""
+	statusBarColor := "#36B37E"
+	statusBarWidth := "100"
 
-    if expiryDate != "N/A" {
-        if t, parseErr := time.Parse("2006-01-02", expiryDate); parseErr == nil {
-            days := int(time.Until(t).Hours() / 24)
-            if days < 0 {
-                statusClass = "ads-lozenge-removed"
-                statusText = "EXPIRED"
-                daysRemaining = fmt.Sprintf("Expired %d days ago", -days)
-                statusBarColor = "#DE350B"
-                statusBarWidth = "100"
-            } else if days < 30 {
-                statusClass = "ads-lozenge-moved"
-                statusText = "EXPIRING SOON"
-                daysRemaining = fmt.Sprintf("%d days remaining", days)
-                statusBarColor = "#FF991F"
-                statusBarWidth = fmt.Sprintf("%d", days*100/365)
-            } else {
-                daysRemaining = fmt.Sprintf("%d days remaining", days)
-                statusBarWidth = fmt.Sprintf("%d", min(days*100/365, 100))
-            }
-        }
-    } else {
-        statusClass = "ads-lozenge-default"
-        statusText = "NO LICENSE"
-        daysRemaining = "No license configured"
-        statusBarColor = "#6B778C"
-        statusBarWidth = "0"
-    }
+	if expiryDate != "N/A" {
+		if t, parseErr := time.Parse("2006-01-02", expiryDate); parseErr == nil {
+			days := int(time.Until(t).Hours() / 24)
+			if days < 0 {
+				statusClass = "ads-lozenge-removed"
+				statusText = "EXPIRED"
+				daysRemaining = fmt.Sprintf("Expired %d days ago", -days)
+				statusBarColor = "#DE350B"
+				statusBarWidth = "100"
+			} else if days < 30 {
+				statusClass = "ads-lozenge-moved"
+				statusText = "EXPIRING SOON"
+				daysRemaining = fmt.Sprintf("%d days remaining", days)
+				statusBarColor = "#FF991F"
+				statusBarWidth = fmt.Sprintf("%d", days*100/365)
+			} else {
+				daysRemaining = fmt.Sprintf("%d days remaining", days)
+				statusBarWidth = fmt.Sprintf("%d", min(days*100/365, 100))
+			}
+		}
+	} else {
+		statusClass = "ads-lozenge-default"
+		statusText = "NO LICENSE"
+		daysRemaining = "No license configured"
+		statusBarColor = "#6B778C"
+		statusBarWidth = "0"
+	}
 
-    safeExpiry := html.EscapeString(expiryDate)
-    safeDays := html.EscapeString(daysRemaining)
+	safeExpiry := html.EscapeString(expiryDate)
+	safeDays := html.EscapeString(daysRemaining)
 
-    // Inner content - the license card only (used for AJAX sidebar loads)
-    innerContent := fmt.Sprintf(`
+	// Inner content - the license card only (used for AJAX sidebar loads)
+	innerContent := fmt.Sprintf(`
                 <div class="ads-page-header"><h1>License Management</h1></div>
                 <div class="ads-card-flat">
                     <div class="ads-card-header">
@@ -124,16 +124,16 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
                     </div>
                 </div>
     `, statusClass, statusText, safeExpiry, safeDays,
-        statusBarColor, statusBarWidth)
+		statusBarColor, statusBarWidth)
 
-    // If AJAX request from sidebar, return only the inner content
-    if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
-        fmt.Fprintln(w, innerContent)
-        return
-    }
+	// If AJAX request from sidebar, return only the inner content
+	if r.Header.Get("X-Requested-With") == "XMLHttpRequest" {
+		fmt.Fprintln(w, innerContent)
+		return
+	}
 
-    // Full page load - wrap in settings layout with sidebar
-    content := fmt.Sprintf(`
+	// Full page load - wrap in settings layout with sidebar
+	content := fmt.Sprintf(`
         <div style="position:fixed; top:56px; left:0; right:0; z-index:99;">
             <div class="ads-settings-bar">
                 <a href="/settings/users">User management</a>
@@ -210,23 +210,23 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
         </script>
     `, innerContent)
 
-    RenderPage(w, PageData{
-        Title:   "License Management",
-        IsAdmin: isAdmin,
-        Content: template.HTML(content),
-    })
+	RenderPage(w, PageData{
+		Title:   "License Management",
+		IsAdmin: isAdmin,
+		Content: template.HTML(content),
+	})
 }
 
 func updateLicense(w http.ResponseWriter, r *http.Request) {
-    newLicense := r.FormValue("license")
-    newLicense = strings.TrimSpace(newLicense)
+	newLicense := r.FormValue("license")
+	newLicense = strings.TrimSpace(newLicense)
 
-    valid, err := ValidateLicense(newLicense)
-    if err != nil || !valid {
-        log.Printf("Failed to update license: %v", err)
-        http.Error(w, "Invalid license", http.StatusBadRequest)
-        return
-    }
+	valid, err := ValidateLicense(newLicense)
+	if err != nil || !valid {
+		log.Printf("Failed to update license: %v", err)
+		http.Error(w, "Invalid license", http.StatusBadRequest)
+		return
+	}
 
-    http.Redirect(w, r, "/settings/updatelicense", http.StatusSeeOther)
+	http.Redirect(w, r, "/settings/updatelicense", http.StatusSeeOther)
 }
