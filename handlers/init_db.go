@@ -23,10 +23,13 @@ func InitDB(dataSourceName string) {
 	}
 
 	var err error
-	db, err = sql.Open("sqlite", dataSourceName)
+	db, err = sql.Open("sqlite", dataSourceName+"?_busy_timeout=10000&_journal_mode=WAL")
 	if err != nil {
 		log.Fatalf("Failed to open database: %v", err)
 	}
+
+	// Single writer connection avoids SQLITE_BUSY under concurrent goroutines
+	db.SetMaxOpenConns(1)
 
 	// Test the connection
 	err = db.Ping()
