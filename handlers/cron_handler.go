@@ -727,15 +727,22 @@ func HandleLogLive(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid run ID", http.StatusBadRequest)
 		return
 	}
-	var status, logText string
-	if err := db.QueryRow("SELECT status, log FROM backup_policy_runs WHERE id = ?", runID).
-		Scan(&status, &logText); err != nil {
+	var status, logText, startedAt, finishedAt string
+	var sizeBytes int64
+	if err := db.QueryRow(`SELECT status, log, COALESCE(started_at,''), COALESCE(finished_at,''), backup_size_bytes FROM backup_policy_runs WHERE id = ?`, runID).
+		Scan(&status, &logText, &startedAt, &finishedAt, &sizeBytes); err != nil {
 		w.Header().Set("Content-Type", "application/json")
-		w.Write([]byte(`{"status":"","log":""}`))
+		w.Write([]byte(`{"status":"","log":"","started_at":"","finished_at":"","size_bytes":0}`))
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]string{"status": status, "log": logText})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"status":      status,
+		"log":         logText,
+		"started_at":  startedAt,
+		"finished_at": finishedAt,
+		"size_bytes":  sizeBytes,
+	})
 }
 
 // ─── Logs (run history for a policy) ─────────────────────────────────────────
@@ -824,21 +831,21 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 		}
 
 		tableRows += fmt.Sprintf(`
-		<tr>
+		<tr id="run-row-%d">
 			<td style="font-family:monospace;font-size:12px;">#%d</td>
 			<td style="font-size:12px;">%s</td>
-			<td>%s</td>
-			<td style="font-size:12px;">%s</td>
-			<td style="font-size:12px;">%s</td>
+			<td id="run-status-%d">%s</td>
+			<td id="run-duration-%d" style="font-size:12px;">%s</td>
+			<td id="run-size-%d" style="font-size:12px;">%s</td>
 			<td>
 				<a href="/cron/policies/runs/%d" class="ads-btn ads-btn-sm ads-btn-default" style="padding:2px 8px;font-size:11px;">Detail</a>
 				<button onclick="showLog(%d)" class="ads-btn ads-btn-sm ads-btn-default" style="padding:2px 8px;font-size:11px;">Log</button>
 			</td>
 		</tr>`,
-			run.ID, html.EscapeString(started),
-			statusBadge(run.Status),
-			html.EscapeString(duration),
-			html.EscapeString(sizeStr),
+			run.ID, run.ID, html.EscapeString(started),
+			run.ID, statusBadge(run.Status),
+			run.ID, html.EscapeString(duration),
+			run.ID, html.EscapeString(sizeStr),
 			run.ID, run.ID,
 		)
 	}
@@ -939,24 +946,52 @@ function showLog(runID) {
     }
 })();
 
+function statusBadgeHTML(status) {
+    const colours = {success:'#00875A', failed:'#DE350B', partial:'#FF991F', running:'#0052CC'};
+    const c = colours[status] || '#97A0AF';
+    const label = status ? status.toUpperCase() : 'NEVER RUN';
+    return '<span style="display:inline-block;padding:2px 8px;border-radius:12px;background:' + c + ';color:#fff;font-size:11px;font-weight:600;">' + label + '</span>';
+}
+
+function fmtDuration(startedAt, finishedAt) {
+    if (!startedAt || !finishedAt) return finishedAt ? '' : 'running…';
+    const d = Math.round((new Date(finishedAt) - new Date(startedAt)) / 1000);
+    return d < 60 ? d + 's' : Math.floor(d/60) + 'm' + (d%60) + 's';
+}
+
+function fmtSize(bytes) {
+    if (!bytes) return '—';
+    if (bytes > 1073741824) return (bytes/1073741824).toFixed(1) + ' GB';
+    if (bytes > 1048576)    return (bytes/1048576).toFixed(1) + ' MB';
+    if (bytes > 1024)       return (bytes/1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+}
+
 function pollLog(runID) {
-    if (activeRunID !== runID) return; // user switched to another run
+    if (activeRunID !== runID) return;
     fetch('/cron/policies/log-live/' + runID)
         .then(r => r.json())
         .then(data => {
             if (activeRunID !== runID) return;
+            // Update log panel
             const pre = document.getElementById('log-output');
             if (pre) {
                 pre.textContent = data.log || '(no log yet)';
                 pre.scrollTop = pre.scrollHeight;
             }
             document.getElementById('log-panel').style.display = 'block';
+            // Update table row cells in-place
+            const statusEl = document.getElementById('run-status-' + runID);
+            if (statusEl) statusEl.innerHTML = statusBadgeHTML(data.status);
+            const durEl = document.getElementById('run-duration-' + runID);
+            if (durEl) durEl.textContent = fmtDuration(data.started_at, data.finished_at);
+            const sizeEl = document.getElementById('run-size-' + runID);
+            if (sizeEl) sizeEl.textContent = fmtSize(data.size_bytes);
+
             if (data.status === 'running') {
                 setTimeout(() => pollLog(runID), 2000);
-            } else {
-                // Run finished — reload page after 1s to update status badges
-                setTimeout(() => location.reload(), 1000);
             }
+            // No page reload needed — table is already updated in-place
         })
         .catch(() => {
             if (activeRunID === runID) setTimeout(() => pollLog(runID), 3000);
