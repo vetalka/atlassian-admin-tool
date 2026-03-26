@@ -52,15 +52,16 @@ func loadPolicyCleanupInfos(ctx context.Context) []PolicyCleanupInfo {
 		}
 
 		// --- disk folders ---
-		diskFolders := map[string]int64{} // folder→size
+		// NOTE: No recursive size calculation here — calculateDirSize blocks on NFS/slow paths.
+		// Sizes are shown as "—" on page load; freed bytes are reported by delete handlers.
+		diskFolders := map[string]struct{}{} // folder→present
 		if _, statErr := os.Stat(p.DestinationFolder); statErr == nil {
 			if entries, err := listRunFolders(p.DestinationFolder); err == nil {
 				for _, e := range entries {
 					if ctx.Err() != nil {
 						break
 					}
-					full := filepath.Join(p.DestinationFolder, e.Name())
-					diskFolders[e.Name()] = calculateDirSize(full)
+					diskFolders[e.Name()] = struct{}{}
 				}
 			}
 		} else {
@@ -94,15 +95,14 @@ func loadPolicyCleanupInfos(ctx context.Context) []PolicyCleanupInfo {
 		seen := map[string]bool{}
 
 		// disk-first: folders on disk (matched or unmatched to DB)
-		for folder, sz := range diskFolders {
-			run := RunInfo{Folder: folder, SizeBytes: sz, ExistsOnDisk: true}
+		for folder := range diskFolders {
+			run := RunInfo{Folder: folder, SizeBytes: 0, ExistsOnDisk: true}
 			if rec, ok := dbRuns[folder]; ok {
 				run.RunID = rec.id
 				run.Status = rec.status
 				run.StartedAt = rec.startedAt
 			}
 			p.Runs = append(p.Runs, run)
-			p.TotalSizeBytes += sz
 			seen[folder] = true
 		}
 
