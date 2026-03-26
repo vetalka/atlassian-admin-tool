@@ -1,25 +1,44 @@
 package handlers
 
 import (
-    "net/http"
-    "github.com/gorilla/sessions"
-    "log"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
+	"log"
+	"net/http"
+	"os"
 	"strings"
+
+	"github.com/gorilla/sessions"
 )
 
 // Initialize the session store
 var store *sessions.CookieStore
 
 func init() {
-    store = sessions.NewCookieStore([]byte("something-very-secret"))
-    store.Options = &sessions.Options{
-        Path:     "/",
-        MaxAge:   86400,     // 1 day
-        HttpOnly: true,     // Cookie is not accessible via JavaScript
-        Secure:   false,    // Set to true if you're using HTTPS
-        SameSite: http.SameSiteLaxMode, // Helps with cross-site request issues
-    }
+	secret := getSessionSecret()
+	store = sessions.NewCookieStore([]byte(secret))
+	store.Options = &sessions.Options{
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		Secure:   os.Getenv("SESSION_SECURE") != "false",
+		SameSite: http.SameSiteLaxMode,
+	}
+}
+
+// getSessionSecret returns the session signing key from SESSION_SECRET env var,
+// falling back to a randomly generated key (sessions will be invalidated on restart).
+func getSessionSecret() string {
+	if secret := os.Getenv("SESSION_SECRET"); secret != "" {
+		return secret
+	}
+	log.Println("WARNING: SESSION_SECRET env var not set; using a random key (sessions will not survive restarts)")
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		panic("failed to generate random session secret: " + err.Error())
+	}
+	return hex.EncodeToString(b)
 }
 
 // SetupMiddleware ensures that the license is set up and a user is created
