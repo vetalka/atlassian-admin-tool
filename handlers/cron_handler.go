@@ -83,6 +83,7 @@ func extractIDFromPath(path string) (int64, error) {
 func backupTypeBadge(bt string) string {
 	colours := map[string]string{
 		"database":    "#00875A",
+		"eazybi":      "#00B8D9",
 		"attachments": "#0052CC",
 		"nfs":         "#FF991F",
 		"appdata":     "#6554C0",
@@ -172,18 +173,19 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Build environments dropdown for create/edit modal
-	envRows, _ := db.Query("SELECT id, name, app FROM environments ORDER BY app, name")
+	envRows, _ := db.Query("SELECT id, name, app, COALESCE(eazybi_dbname,'') FROM environments ORDER BY app, name")
 	type envOpt struct {
-		ID   int64
-		Name string
-		App  string
+		ID           int64
+		Name         string
+		App          string
+		EazyBIDBName string
 	}
 	var envOpts []envOpt
 	if envRows != nil {
 		defer envRows.Close()
 		for envRows.Next() {
 			var e envOpt
-			envRows.Scan(&e.ID, &e.Name, &e.App)
+			envRows.Scan(&e.ID, &e.Name, &e.App, &e.EazyBIDBName)
 			envOpts = append(envOpts, e)
 		}
 	}
@@ -259,8 +261,13 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 	// ── Environment options for modal ─────────────────────────────────────────
 	envOptsHTML := `<option value="">— select environment —</option>`
 	for _, e := range envOpts {
-		envOptsHTML += fmt.Sprintf(`<option value="%d">%s (%s)</option>`,
-			e.ID, html.EscapeString(e.Name), html.EscapeString(e.App))
+		hasEazyBI := "0"
+		if e.EazyBIDBName != "" {
+			hasEazyBI = "1"
+		}
+		envOptsHTML += fmt.Sprintf(`<option value="%d" data-app="%s" data-eazybi="%s">%s (%s)</option>`,
+			e.ID, html.EscapeString(e.App), hasEazyBI,
+			html.EscapeString(e.Name), html.EscapeString(e.App))
 	}
 
 	// ── Policy JSON for edit modal ─────────────────────────────────────────────
@@ -353,7 +360,10 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 				<label class="ads-form-label">Backup Types</label>
 				<div style="display:flex;flex-wrap:wrap;gap:10px;">
 					<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
-						<input type="checkbox" name="backup_types" value="database" id="bt-database"> Database
+						<input type="checkbox" name="backup_types" value="database" id="bt-database"> <span id="bt-database-label">Database</span>
+					</label>
+					<label id="bt-eazybi-row" style="display:none;align-items:center;gap:6px;cursor:pointer;">
+						<input type="checkbox" name="backup_types" value="eazybi" id="bt-eazybi"> EazyBI Database
 					</label>
 					<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
 						<input type="checkbox" name="backup_types" value="attachments" id="bt-attachments"> Attachments
@@ -366,7 +376,7 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 					</label>
 					<label style="display:flex;align-items:center;gap:6px;cursor:pointer;">
 						<input type="checkbox" name="backup_types" value="full" id="bt-full"
-						       onchange="if(this.checked){['database','attachments','nfs','appdata'].forEach(id=>{document.getElementById('bt-'+id).checked=false;})}"> Full (all)
+						       onchange="if(this.checked){['database','eazybi','attachments','nfs','appdata'].forEach(id=>{document.getElementById('bt-'+id).checked=false;})}"> Full (all)
 					</label>
 				</div>
 			</div>
@@ -411,10 +421,11 @@ function openCreateModal() {
     document.getElementById('sched-preset').value = '';
     document.getElementById('f-dest').value = '/adminToolBackupDirectory/scheduled/';
     document.getElementById('f-retention').value = '30';
-    ['database','attachments','nfs','appdata','full'].forEach(bt => {
+    ['database','eazybi','attachments','nfs','appdata','full'].forEach(bt => {
         const el = document.getElementById('bt-' + bt);
         if (el) el.checked = false;
     });
+    updateEnvBackupTypes('');
     document.getElementById('policy-modal').style.display = 'block';
 }
 
@@ -431,10 +442,11 @@ function openEditModal(id) {
     updateSchedDesc(p.schedule);
     document.getElementById('f-dest').value = p.destination_folder;
     document.getElementById('f-retention').value = p.retention_days;
-    ['database','attachments','nfs','appdata','full'].forEach(bt => {
+    ['database','eazybi','attachments','nfs','appdata','full'].forEach(bt => {
         const el = document.getElementById('bt-' + bt);
         if (el) el.checked = (p.backup_types || []).indexOf(bt) >= 0;
     });
+    updateEnvBackupTypes(p.environment_id);
     document.getElementById('policy-modal').style.display = 'block';
 }
 
@@ -463,8 +475,35 @@ function updateSchedDesc(v) {
     document.getElementById('sched-desc').textContent = desc;
 }
 
+function updateEnvBackupTypes(envID) {
+    const sel = document.getElementById('f-env');
+    const opt = sel ? sel.querySelector('option[value="' + envID + '"]') : null;
+    const app = opt ? (opt.dataset.app || '') : '';
+    const hasEazyBI = opt ? (opt.dataset.eazybi === '1') : false;
+
+    // Update database label to show app name
+    const dbLabel = document.getElementById('bt-database-label');
+    if (dbLabel) {
+        const appName = app ? app.charAt(0).toUpperCase() + app.slice(1).toLowerCase() : 'App';
+        dbLabel.textContent = appName + ' Database';
+    }
+
+    // Show/hide EazyBI row
+    const eazybiRow = document.getElementById('bt-eazybi-row');
+    if (eazybiRow) {
+        eazybiRow.style.display = hasEazyBI ? 'flex' : 'none';
+        if (!hasEazyBI) {
+            const el = document.getElementById('bt-eazybi');
+            if (el) el.checked = false;
+        }
+    }
+}
+
 // Auto-suggest destination folder from policy name
 document.addEventListener('DOMContentLoaded', function() {
+    document.getElementById('f-env').addEventListener('change', function() {
+        updateEnvBackupTypes(this.value);
+    });
     document.getElementById('f-name').addEventListener('input', function() {
         const dest = document.getElementById('f-dest');
         if (!dest.dataset.userEdited) {

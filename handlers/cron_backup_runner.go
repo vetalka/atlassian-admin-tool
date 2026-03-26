@@ -62,6 +62,11 @@ type envSnapshot struct {
 	DBHost         string
 	DBDriver       string
 	ConnectionType string
+	EazyBIDBName   string
+	EazyBIDBUser   string
+	EazyBIDBPass   string
+	EazyBIDBPort   string
+	EazyBIDBHost   string
 }
 
 // ─── DB helpers ───────────────────────────────────────────────────────────────
@@ -97,12 +102,17 @@ func loadEnvSnapshot(envID int64) (*envSnapshot, error) {
 		SELECT name, app, ip, server_user, server_password,
 		       home_dir, install_dir, sharedhome_dir,
 		       app_dbname, app_dbuser, app_dbpass, app_dbport, app_dbhost,
-		       db_driver, db_connection_type
+		       db_driver, db_connection_type,
+		       COALESCE(eazybi_dbname,''), COALESCE(eazybi_dbuser,''),
+		       COALESCE(eazybi_dbpass,''), COALESCE(eazybi_dbport,''),
+		       COALESCE(eazybi_dbhost,'')
 		FROM environments WHERE id = ?`, envID).
 		Scan(&e.Name, &e.App, &e.IP, &e.ServerUser, &e.ServerPassword,
 			&e.HomeDir, &e.InstallDir, &e.SharedHomeDir,
 			&e.DBName, &e.DBUser, &e.DBPass, &e.DBPort, &e.DBHost,
-			&e.DBDriver, &e.ConnectionType)
+			&e.DBDriver, &e.ConnectionType,
+			&e.EazyBIDBName, &e.EazyBIDBUser, &e.EazyBIDBPass,
+			&e.EazyBIDBPort, &e.EazyBIDBHost)
 	if err != nil {
 		return nil, err
 	}
@@ -174,6 +184,9 @@ func RunPolicy(policyID int64) {
 	types := policy.BackupTypes
 	if contains(types, "full") {
 		types = []string{"database", "attachments", "nfs", "appdata"}
+		if env.EazyBIDBName != "" {
+			types = append(types, "eazybi")
+		}
 	}
 
 	var filesCreated []string
@@ -201,6 +214,8 @@ func RunPolicy(policyID int64) {
 			files, runErr = runScheduledNFSBackup(env, destDir, runID)
 		case "appdata":
 			files, runErr = runScheduledAppDataBackup(env, destDir, runID)
+		case "eazybi":
+			files, runErr = runScheduledEazyBIBackup(env, destDir, runID)
 		default:
 			appendRunLog(runID, fmt.Sprintf("[%s] unknown type — skipped", bt))
 			continue
@@ -481,4 +496,19 @@ func policyDiskUsage(destFolder string) string {
 		return "0 B"
 	}
 	return humanize.Bytes(uint64(size))
+}
+
+func runScheduledEazyBIBackup(env *envSnapshot, destDir string, runID int64) ([]string, error) {
+	if env.EazyBIDBName == "" {
+		return nil, fmt.Errorf("no EazyBI database configured for environment %q", env.Name)
+	}
+	appendRunLog(runID, fmt.Sprintf("[eazybi] host=%s db=%s driver=%s", env.EazyBIDBHost, env.EazyBIDBName, env.DBDriver))
+
+	if err := BackupDatabaseForEnv(env.Name+"-eazybi", env.EazyBIDBHost, env.EazyBIDBUser, env.EazyBIDBPass,
+		env.EazyBIDBName, env.EazyBIDBPort, env.DBDriver, destDir); err != nil {
+		return nil, err
+	}
+
+	entries, _ := filepath.Glob(filepath.Join(destDir, "*"))
+	return entries, nil
 }
