@@ -11,16 +11,30 @@ import (
 // HandleUserManagement renders a page to manage users (list, add, delete, update password)
 func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet {
-		// Fetch all users from the database
+		// Fetch all users — scan into slice immediately to release the connection
+		// before running a second query (avoids deadlock with SetMaxOpenConns(1))
 		rows, err := db.Query("SELECT id, username FROM users WHERE directory = 'Local Directory'")
 		if err != nil {
 			log.Printf("Failed to query users: %v", err)
 			http.Error(w, "Failed to load users", http.StatusInternalServerError)
 			return
 		}
-		defer rows.Close()
+		type localUser struct {
+			id       int
+			username string
+		}
+		var users []localUser
+		for rows.Next() {
+			var u localUser
+			if err := rows.Scan(&u.id, &u.username); err != nil {
+				log.Printf("Failed to scan user: %v", err)
+				continue
+			}
+			users = append(users, u)
+		}
+		rows.Close()
 
-		// Fetch groups from the database
+		// Now safe to run second query — first connection is released
 		groupRows, err := db.Query("SELECT DISTINCT groups FROM groups")
 		if err != nil {
 			log.Printf("Failed to query groups: %v", err)
@@ -41,7 +55,7 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Start of HTML with adjusted layout
-		html := fmt.Sprintf(`
+		htmlOut := fmt.Sprintf(`
         
         <div class="user-management-container">
             <div class="user-list-section">
@@ -59,14 +73,9 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
                     </tr>`)
 
 		// Add each user to the table with a delete button and password update form
-		for rows.Next() {
-			var id int
-			var username string
-			if err := rows.Scan(&id, &username); err != nil {
-				log.Printf("Failed to scan user: %v", err)
-				continue
-			}
-			html += fmt.Sprintf(`
+		for _, u := range users {
+			id, username := u.id, u.username
+			htmlOut += fmt.Sprintf(`
                 <tr>
                     <td>%s</td>
                     <td>
@@ -85,7 +94,7 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
                 </tr>`, username, id, id)
 		}
 
-		html += fmt.Sprintf(`
+		htmlOut += fmt.Sprintf(`
                 </table>
             </div>
             <div class="add-user-section">
@@ -125,7 +134,7 @@ func HandleLocalUserManagement(w http.ResponseWriter, r *http.Request) {
         window._filterLocal = filterLocalTable;
         </script>`, groupOptions)
 
-		fmt.Fprintln(w, html)
+		fmt.Fprintln(w, htmlOut)
 	}
 }
 

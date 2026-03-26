@@ -171,6 +171,9 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
                     <a href="/settings/updatelicense" class="ads-sidebar-item active">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
                         License</a>
+                    <a href="/cron/policies" class="ads-sidebar-item" data-full="1">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        Backup Policies</a>
                 </div>
             </div>
             <div class="ads-main-content">
@@ -200,6 +203,7 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
         document.addEventListener('DOMContentLoaded', function() {
             document.querySelectorAll('.ads-sidebar-item').forEach(function(link) {
                 link.addEventListener('click', function(event) {
+                    if (this.dataset.full) return; // full-page nav — let browser handle it
                     event.preventDefault();
                     document.querySelectorAll('.ads-sidebar-item').forEach(function(l) { l.classList.remove('active'); });
                     this.classList.add('active');

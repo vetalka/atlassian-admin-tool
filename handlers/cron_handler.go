@@ -327,7 +327,7 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 			<a href="/settings/updatelicense" class="ads-sidebar-item">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
 				License</a>
-			<a href="/cron/policies" class="ads-sidebar-item active">
+			<a href="/cron/policies" class="ads-sidebar-item active" data-full="1">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
 				Backup Policies</a>
 		</div>
@@ -449,7 +449,37 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 			</div>
 		</form>
 	</div>
-</div>`, tableRows, envOptsHTML)
+</div>
+<script>
+function loadContent(url) {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", url, true);
+    xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
+    xhr.onreadystatechange = function() {
+        if (xhr.readyState === 4 && xhr.status === 200) {
+            document.getElementById("content-section").innerHTML = xhr.responseText;
+            var scripts = document.getElementById("content-section").querySelectorAll("script");
+            scripts.forEach(function(oldScript) {
+                var newScript = document.createElement("script");
+                newScript.textContent = oldScript.textContent;
+                oldScript.parentNode.replaceChild(newScript, oldScript);
+            });
+        }
+    };
+    xhr.send();
+}
+document.addEventListener("DOMContentLoaded", function() {
+    document.querySelectorAll(".ads-sidebar-item").forEach(function(link) {
+        link.addEventListener("click", function(event) {
+            if (this.dataset.full) return;
+            event.preventDefault();
+            document.querySelectorAll(".ads-sidebar-item").forEach(function(l) { l.classList.remove("active"); });
+            this.classList.add("active");
+            loadContent(this.getAttribute("href"));
+        });
+    });
+});
+</script>`, tableRows, envOptsHTML)
 
 	extraHead := template.HTML(fmt.Sprintf(`<script>
 const POLICIES = %s;
@@ -1006,7 +1036,7 @@ function statusBadgeHTML(status) {
 function fmtDuration(startedAt, finishedAt) {
     if (!startedAt || !finishedAt) return finishedAt ? '' : 'running…';
     const d = Math.round((new Date(finishedAt) - new Date(startedAt)) / 1000);
-    return d < 60 ? d + 's' : Math.floor(d/60) + 'm' + (d%60) + 's';
+    return d < 60 ? d + 's' : Math.floor(d/60) + 'm' + (d%%60) + 's';
 }
 
 function fmtSize(bytes) {
