@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Add Environment</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <h1>Add Environment</h1>
+    <form action="/add-environment" method="POST">
+        <label for="environmentName">Environment Name:</label>
+        <input type="text" id="environmentName" name="environmentName" required><br>
+        <label for="environmentIP">Environment IP:</label>
+        <input type="text" id="environmentIP" name="environmentIP" required><br>
+        <button type="submit">Add Environment</button>
+        <button type="button" onclick="goBack()" class="back-button">Back to Main Menu</button>
+    </form>
+    <script>
+        function goBack() {
+            window.location.href = "/";
+        }
+    </script>
+</body>
+</html>
+
