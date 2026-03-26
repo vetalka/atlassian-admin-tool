@@ -906,50 +906,61 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 
 	extraHead := template.HTML(fmt.Sprintf(`<script>
 const ALL_LOGS = %s;
+let activeRunID = 0;
+
 function showLog(runID) {
-    const log = ALL_LOGS[runID] || '(no log available)';
-    document.getElementById('log-output').textContent = log;
+    activeRunID = runID;
+    const log = ALL_LOGS[runID] || '';
+    document.getElementById('log-output').textContent = log || '(no log yet)';
     document.getElementById('log-run-label').textContent = 'Run #' + runID;
     document.getElementById('log-panel').style.display = 'block';
     document.getElementById('log-panel').scrollIntoView({behavior:'smooth'});
+    // Start live polling for the selected run regardless of how page was opened
+    pollLog(runID);
 }
-// Live log polling when ?live=runID is present, else one-shot reload
+
+// On page load: if ?live= param present open that run; always auto-reload table rows while any run is RUNNING
 (function() {
     const params = new URLSearchParams(window.location.search);
     const liveID = params.get('live');
     if (liveID) {
         showLog(parseInt(liveID));
-        pollLog(parseInt(liveID));
     } else {
-        const cells = document.querySelectorAll('td');
-        for (let i = 0; i < cells.length; i++) {
-            if (cells[i].textContent.includes('RUNNING')) {
-                setTimeout(() => location.reload(), 4000);
-                break;
+        // Check if any row is RUNNING and kick off polling for it
+        document.querySelectorAll('tr').forEach(function(row) {
+            if (row.textContent.includes('RUNNING')) {
+                const btn = row.querySelector('button[onclick^="showLog"]');
+                if (btn) {
+                    const m = btn.getAttribute('onclick').match(/showLog\((\d+)\)/);
+                    if (m) showLog(parseInt(m[1]));
+                }
             }
-        }
+        });
     }
 })();
 
 function pollLog(runID) {
+    if (activeRunID !== runID) return; // user switched to another run
     fetch('/cron/policies/log-live/' + runID)
         .then(r => r.json())
         .then(data => {
+            if (activeRunID !== runID) return;
             const pre = document.getElementById('log-output');
             if (pre) {
-                pre.textContent = data.log;
-                // auto-scroll to bottom
+                pre.textContent = data.log || '(no log yet)';
                 pre.scrollTop = pre.scrollHeight;
             }
             document.getElementById('log-panel').style.display = 'block';
             if (data.status === 'running') {
                 setTimeout(() => pollLog(runID), 2000);
             } else {
-                // Run finished — reload page after 1s to update status badge
+                // Run finished — reload page after 1s to update status badges
                 setTimeout(() => location.reload(), 1000);
             }
         })
-        .catch(() => setTimeout(() => pollLog(runID), 3000));
+        .catch(() => {
+            if (activeRunID === runID) setTimeout(() => pollLog(runID), 3000);
+        });
 }
 </script>`, string(logsJSON)))
 
