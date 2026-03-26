@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"html/template"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -399,25 +400,47 @@ function deleteRun(policyID, folder, btn) {
 	}).catch(() => { showMsg(policyID, 'Delete failed.', false); btn.disabled = false; });
 }
 
-function deleteAll(policyID) {
+async function deleteAll(policyID) {
+	const btn = event.target;
 	const name = document.querySelector('#policy-card-' + policyID + ' .ads-card-header span:nth-child(2)');
 	const label = name ? name.textContent.replace('Policy: ','') : 'this policy';
-	if (!confirm('Delete ALL backup runs for policy "' + label + '"? This cannot be undone.')) return;
-	fetch('/cron/cleanup/delete-all', {
-		method: 'POST',
-		headers: {'Content-Type': 'application/json'},
-		body: JSON.stringify({policy_id: policyID})
-	}).then(r => r.json()).then(d => {
+	if (!confirm('Delete ALL backup runs and DB records for policy "' + label + '"? This cannot be undone.')) return;
+	btn.disabled = true;
+	btn.textContent = 'Deleting...';
+	try {
+		const resp = await fetch('/cron/cleanup/delete-all', {
+			method: 'POST',
+			headers: {'Content-Type': 'application/json'},
+			body: JSON.stringify({policy_id: policyID})
+		});
+		const d = await resp.json();
 		if (d.success) {
+			// Remove ALL run rows (disk + orphan DB records)
 			const runsDiv = document.getElementById('runs-' + policyID);
 			if (runsDiv) runsDiv.innerHTML = '<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>';
 			const bar = document.getElementById('sel-bar-' + policyID);
 			if (bar) bar.style.display = 'none';
-			showMsg(policyID, '✓ Deleted ' + d.count + ' folder(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
+			const totalEl = document.getElementById('total-size-' + policyID);
+			if (totalEl) totalEl.textContent = '0 B';
+			showToast('✓ Deleted ' + d.count + ' folder(s), ' + d.records + ' record(s). Freed ' + fmtMB(d.freed_bytes) + '.');
 		} else {
-			showMsg(policyID, d.error || 'Delete failed.', false);
+			showToast('Error: ' + (d.error || 'unknown'), 'error');
 		}
-	}).catch(() => showMsg(policyID, 'Delete failed.', false));
+	} catch(e) {
+		showToast('Network error: ' + e.message, 'error');
+	} finally {
+		btn.disabled = false;
+		btn.textContent = '\uD83D\uDDD1 Delete All';
+	}
+}
+
+function showToast(msg, type) {
+	const t = document.createElement('div');
+	t.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:12px 20px;background:' +
+		(type==='error'?'#DE350B':'#00875A') + ';color:#fff;border-radius:6px;z-index:9999;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3);';
+	t.textContent = msg;
+	document.body.appendChild(t);
+	setTimeout(() => t.remove(), 4000);
 }
 
 function deleteOlderThan(policyID) {
@@ -553,33 +576,53 @@ func HandleCleanupDeleteAll(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		PolicyID int64 `json:"policy_id"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.PolicyID == 0 {
+		log.Printf("HandleCleanupDeleteAll: bad request: %v", err)
 		http.Error(w, "invalid request", http.StatusBadRequest)
 		return
 	}
 	var destFolder string
 	if err := db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", body.PolicyID).Scan(&destFolder); err != nil {
+		log.Printf("HandleCleanupDeleteAll: policy %d not found: %v", body.PolicyID, err)
 		http.Error(w, "policy not found", http.StatusNotFound)
 		return
 	}
 	cleanDest := filepath.Clean(destFolder)
 	if !strings.HasPrefix(cleanDest, safeRoot) {
+		log.Printf("HandleCleanupDeleteAll: path not allowed: %s", cleanDest)
 		http.Error(w, "path not allowed", http.StatusForbidden)
 		return
 	}
-	entries, _ := listRunFolders(destFolder)
+	// Delete run folders on disk
+	entries, _ := os.ReadDir(cleanDest)
 	var freed int64
 	count := 0
 	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
 		full := filepath.Join(cleanDest, e.Name())
 		freed += calculateDirSize(full)
-		removeAllSafe(full)
-		count++
+		if err := os.RemoveAll(full); err != nil {
+			log.Printf("HandleCleanupDeleteAll: RemoveAll %s: %v", full, err)
+		} else {
+			count++
+		}
 	}
-	// Delete all run records for this policy
-	db.Exec("DELETE FROM backup_policy_runs WHERE policy_id=?", body.PolicyID)
+	// Delete ALL run records for this policy from DB
+	res, err := db.Exec("DELETE FROM backup_policy_runs WHERE policy_id=?", body.PolicyID)
+	if err != nil {
+		log.Printf("HandleCleanupDeleteAll: DB delete error: %v", err)
+	}
+	records, _ := res.RowsAffected()
+	log.Printf("HandleCleanupDeleteAll: policy=%d folders=%d records=%d freed=%d", body.PolicyID, count, records, freed)
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(map[string]interface{}{"success": true, "freed_bytes": freed, "count": count})
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"freed_bytes": freed,
+		"count":      count,
+		"records":    records,
+	})
 }
 
 // HandleCleanupDeleteOlderThan handles POST /cron/cleanup/delete-older-than
