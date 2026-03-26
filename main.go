@@ -257,6 +257,9 @@ func main() {
 	http.Handle("/cron/policies/logs/", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleGetLogs),
 	)))
+	http.Handle("/cron/policies/log-live/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleLogLive),
+	)))
 	http.Handle("/cron/policies/runs/", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleGetRunDetail),
 	)))

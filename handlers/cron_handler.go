@@ -709,9 +709,33 @@ func HandleRunNow(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	go RunPolicy(id)
+	runID, err := createPolicyRun(id)
+	if err != nil {
+		http.Error(w, "Failed to start run: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	go runPolicyCore(id, runID)
 
-	http.Redirect(w, r, fmt.Sprintf("/cron/policies/logs/%d", id), http.StatusSeeOther)
+	http.Redirect(w, r, fmt.Sprintf("/cron/policies/logs/%d?live=%d", id, runID), http.StatusSeeOther)
+}
+
+// ─── Live log endpoint ────────────────────────────────────────────────────────
+
+func HandleLogLive(w http.ResponseWriter, r *http.Request) {
+	runID, err := extractIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "Invalid run ID", http.StatusBadRequest)
+		return
+	}
+	var status, logText string
+	if err := db.QueryRow("SELECT status, log FROM backup_policy_runs WHERE id = ?", runID).
+		Scan(&status, &logText); err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"","log":""}`))
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": status, "log": logText})
 }
 
 // ─── Logs (run history for a policy) ─────────────────────────────────────────
@@ -889,16 +913,44 @@ function showLog(runID) {
     document.getElementById('log-panel').style.display = 'block';
     document.getElementById('log-panel').scrollIntoView({behavior:'smooth'});
 }
-// Auto-refresh if any run has status 'running'
+// Live log polling when ?live=runID is present, else one-shot reload
 (function() {
-    const rows = document.querySelectorAll('td');
-    for (let i = 0; i < rows.length; i++) {
-        if (rows[i].textContent.includes('RUNNING')) {
-            setTimeout(() => location.reload(), 4000);
-            break;
+    const params = new URLSearchParams(window.location.search);
+    const liveID = params.get('live');
+    if (liveID) {
+        showLog(parseInt(liveID));
+        pollLog(parseInt(liveID));
+    } else {
+        const cells = document.querySelectorAll('td');
+        for (let i = 0; i < cells.length; i++) {
+            if (cells[i].textContent.includes('RUNNING')) {
+                setTimeout(() => location.reload(), 4000);
+                break;
+            }
         }
     }
 })();
+
+function pollLog(runID) {
+    fetch('/cron/policies/log-live/' + runID)
+        .then(r => r.json())
+        .then(data => {
+            const pre = document.getElementById('log-output');
+            if (pre) {
+                pre.textContent = data.log;
+                // auto-scroll to bottom
+                pre.scrollTop = pre.scrollHeight;
+            }
+            document.getElementById('log-panel').style.display = 'block';
+            if (data.status === 'running') {
+                setTimeout(() => pollLog(runID), 2000);
+            } else {
+                // Run finished — reload page after 1s to update status badge
+                setTimeout(() => location.reload(), 1000);
+            }
+        })
+        .catch(() => setTimeout(() => pollLog(runID), 3000));
+}
 </script>`, string(logsJSON)))
 
 	RenderPage(w, PageData{

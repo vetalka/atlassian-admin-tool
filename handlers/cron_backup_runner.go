@@ -143,14 +143,18 @@ func finishPolicyRun(runID int64, status string) {
 
 // ─── Main orchestrator ────────────────────────────────────────────────────────
 
-// RunPolicy executes a backup policy by ID. Safe to call in a goroutine.
+// RunPolicy executes a backup policy by ID. Used by the cron scheduler.
 func RunPolicy(policyID int64) {
 	runID, err := createPolicyRun(policyID)
 	if err != nil {
 		log.Printf("RunPolicy %d: cannot create run record: %v", policyID, err)
 		return
 	}
+	runPolicyCore(policyID, runID)
+}
 
+// runPolicyCore runs the backup using a pre-created run record.
+func runPolicyCore(policyID, runID int64) {
 	appendRunLog(runID, fmt.Sprintf("Policy %d started.", policyID))
 
 	policy, err := loadBackupPolicy(policyID)
