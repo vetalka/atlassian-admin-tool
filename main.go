@@ -266,6 +266,18 @@ func main() {
 	http.Handle("/cron/policies", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleListPolicies),
 	)))
+	http.Handle("/cron/policies/cleanup-info/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCleanupInfo),
+	)))
+	http.Handle("/cron/policies/delete-run/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleDeleteRun),
+	)))
+	http.Handle("/cron/policies/delete-all-runs/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleDeleteAllRuns),
+	)))
+	http.Handle("/cron/policies/delete-older-than/", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleDeleteOlderThan),
+	)))
 
 	// Route for cleanup backups
 	//http.HandleFunc("/cleanup-backups", handlers.SetupMiddleware(handlers.AuthMiddleware(handlers.HandleCleanupBackupsPage)))

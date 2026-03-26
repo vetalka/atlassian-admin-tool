@@ -8,6 +8,9 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -835,8 +838,8 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var policyName string
-	err = db.QueryRow("SELECT name FROM backup_policies WHERE id = ?", id).Scan(&policyName)
+	var policyName, destFolder string
+	err = db.QueryRow("SELECT name, destination_folder FROM backup_policies WHERE id = ?", id).Scan(&policyName, &destFolder)
 	if err == sql.ErrNoRows {
 		http.Error(w, "Policy not found", http.StatusNotFound)
 		return
@@ -990,12 +993,35 @@ func HandleGetLogs(w http.ResponseWriter, r *http.Request) {
 		<pre id="log-output" style="margin:0;padding:16px 24px;font-size:12px;font-family:monospace;background:var(--color-bg-card);
 		     max-height:400px;overflow-y:auto;white-space:pre-wrap;word-break:break-all;">%s</pre>
 	</div>
+
+	<div class="ads-card-flat" style="margin-top:24px;">
+		<div class="ads-card-header" style="display:flex;justify-content:space-between;align-items:center;">
+			<span style="font-weight:600;">&#x1F5D1; Cleanup Backups</span>
+			<div style="display:flex;gap:8px;align-items:center;">
+				<label style="font-size:13px;color:var(--color-text-subtle);">Delete older than</label>
+				<input id="cleanup-days" type="number" value="30" min="1" style="width:60px;padding:4px 8px;border:1px solid var(--color-border);border-radius:4px;background:var(--color-bg);color:var(--color-text);font-size:13px;">
+				<span style="font-size:13px;color:var(--color-text-subtle);">days</span>
+				<button onclick="cleanOlderThan()" class="ads-btn ads-btn-default" style="font-size:12px;padding:4px 12px;">&#x1F9F9; Clean Now</button>
+				<button onclick="deleteAllRuns()" class="ads-btn" style="font-size:12px;padding:4px 12px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete All Runs</button>
+			</div>
+		</div>
+		<div style="padding:0 24px 16px;">
+			<div style="font-size:12px;color:var(--color-text-subtle);margin-bottom:12px;font-family:monospace;">
+				&#x1F4C1; %s
+			</div>
+			<div id="cleanup-tree" style="font-family:monospace;font-size:13px;">
+				<span style="color:var(--color-text-subtle);">Loading…</span>
+			</div>
+			<div id="cleanup-msg" style="margin-top:12px;font-size:13px;display:none;"></div>
+		</div>
+	</div>
 </div></div>%s`,
 		html.EscapeString(policyName),
 		id,
 		tableRows,
 		map[bool]string{true: "block", false: "none"}[firstLog != ""],
 		html.EscapeString(firstLog),
+		html.EscapeString(destFolder),
 		template.HTML(autoReload),
 	)
 
@@ -1080,7 +1106,89 @@ function pollLog(runID) {
             if (activeRunID === runID) setTimeout(() => pollLog(runID), 3000);
         });
 }
-</script>`, string(logsJSON)))
+
+// ── Cleanup ──────────────────────────────────────────────────────────────────
+const POLICY_ID = %d;
+
+function fmtBytesClean(n) {
+    if (!n) return '0 B';
+    if (n > 1073741824) return (n/1073741824).toFixed(1) + ' GB';
+    if (n > 1048576)    return (n/1048576).toFixed(1) + ' MB';
+    if (n > 1024)       return (n/1024).toFixed(1) + ' KB';
+    return n + ' B';
+}
+
+function showCleanupMsg(msg, ok) {
+    const el = document.getElementById('cleanup-msg');
+    el.textContent = msg;
+    el.style.display = 'block';
+    el.style.color = ok ? '#00875A' : '#DE350B';
+}
+
+function loadCleanupTree() {
+    fetch('/cron/policies/cleanup-info/' + POLICY_ID)
+        .then(r => r.json())
+        .then(folders => {
+            const tree = document.getElementById('cleanup-tree');
+            if (!folders || folders.length === 0) {
+                tree.innerHTML = '<span style="color:var(--color-text-subtle);">No backup runs found on disk.</span>';
+                return;
+            }
+            let html = '';
+            folders.forEach((f, i) => {
+                const isLast = i === folders.length - 1;
+                const prefix = isLast ? '└── ' : '├── ';
+                html += '<div style="display:flex;align-items:center;gap:12px;padding:4px 0;border-bottom:1px solid var(--color-border);">' +
+                    '<span style="color:var(--color-text-subtle);">' + prefix + '</span>' +
+                    '<span>&#x1F4C1; ' + f.folder + '</span>' +
+                    '<span style="color:var(--color-text-subtle);font-size:12px;">[' + fmtBytesClean(f.size_bytes) + ']</span>' +
+                    '<button onclick="deleteRun(\'' + f.folder + '\')" style="padding:2px 10px;font-size:11px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete</button>' +
+                    '</div>';
+            });
+            tree.innerHTML = html;
+        })
+        .catch(() => {
+            document.getElementById('cleanup-tree').textContent = 'Could not load folder list.';
+        });
+}
+
+function deleteRun(folder) {
+    if (!confirm('Delete run folder "' + folder + '"? This cannot be undone.')) return;
+    fetch('/cron/policies/delete-run/' + POLICY_ID, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({folder: folder})
+    }).then(r => r.json()).then(d => {
+        showCleanupMsg('Deleted. Freed ' + fmtBytesClean(d.freed_bytes) + '.', true);
+        loadCleanupTree();
+    }).catch(() => showCleanupMsg('Delete failed.', false));
+}
+
+function deleteAllRuns() {
+    if (!confirm('Delete ALL run folders for this policy? This cannot be undone.')) return;
+    fetch('/cron/policies/delete-all-runs/' + POLICY_ID, {method:'POST'})
+        .then(r => r.json()).then(d => {
+            showCleanupMsg('Deleted ' + d.deleted + ' folder(s). Freed ' + fmtBytesClean(d.freed_bytes) + '.', true);
+            loadCleanupTree();
+        }).catch(() => showCleanupMsg('Delete failed.', false));
+}
+
+function cleanOlderThan() {
+    const days = parseInt(document.getElementById('cleanup-days').value, 10);
+    if (!days || days < 1) { showCleanupMsg('Enter a valid number of days.', false); return; }
+    if (!confirm('Delete all run folders older than ' + days + ' days? This cannot be undone.')) return;
+    fetch('/cron/policies/delete-older-than/' + POLICY_ID, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({days: days})
+    }).then(r => r.json()).then(d => {
+        showCleanupMsg('Deleted ' + d.deleted + ' folder(s). Freed ' + fmtBytesClean(d.freed_bytes) + '.', true);
+        loadCleanupTree();
+    }).catch(() => showCleanupMsg('Delete failed.', false));
+}
+
+document.addEventListener('DOMContentLoaded', loadCleanupTree);
+</script>`, string(logsJSON), id))
 
 	RenderPage(w, PageData{
 		Title:     "Logs — " + policyName,
@@ -1209,4 +1317,188 @@ func HandleGetRunDetail(w http.ResponseWriter, r *http.Request) {
 		IsAdmin: isAdmin,
 		Content: template.HTML(content),
 	})
+}
+
+// ─── Cleanup helpers ──────────────────────────────────────────────────────────
+
+var runFolderRe = regexp.MustCompile(`^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}$`)
+
+const safeRoot = "/adminToolBackupDirectory/scheduled"
+
+// validateCleanupPath checks that target is inside the policy's destination
+// folder and that the destination folder itself lives under safeRoot.
+func validateCleanupPath(destFolder, target string) (string, error) {
+	cleanDest := filepath.Clean(destFolder)
+	if !strings.HasPrefix(cleanDest, safeRoot) {
+		return "", fmt.Errorf("destination folder outside allowed root")
+	}
+	full := filepath.Clean(filepath.Join(cleanDest, target))
+	if !strings.HasPrefix(full, cleanDest+"/") {
+		return "", fmt.Errorf("path traversal detected")
+	}
+	return full, nil
+}
+
+// listRunFolders returns all timestamp-named subdirs inside destFolder.
+func listRunFolders(destFolder string) ([]os.DirEntry, error) {
+	entries, err := os.ReadDir(destFolder)
+	if err != nil {
+		return nil, err
+	}
+	var out []os.DirEntry
+	for _, e := range entries {
+		if e.IsDir() && runFolderRe.MatchString(e.Name()) {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// HandleCleanupInfo returns JSON: [{folder, size_bytes}, …] for a policy.
+// GET /cron/policies/cleanup-info/{id}
+func HandleCleanupInfo(w http.ResponseWriter, r *http.Request) {
+	id, err := extractIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "invalid policy id", http.StatusBadRequest)
+		return
+	}
+	var destFolder string
+	if err = db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", id).Scan(&destFolder); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	entries, _ := listRunFolders(destFolder)
+	type item struct {
+		Folder    string `json:"folder"`
+		SizeBytes int64  `json:"size_bytes"`
+	}
+	result := make([]item, 0, len(entries))
+	for _, e := range entries {
+		full := filepath.Join(destFolder, e.Name())
+		result = append(result, item{Folder: e.Name(), SizeBytes: calculateDirSize(full)})
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(result)
+}
+
+// HandleDeleteRun deletes one run folder.
+// POST /cron/policies/delete-run/{id}   body: {"folder":"2026-03-26_21-37-56"}
+func HandleDeleteRun(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, err := extractIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "invalid policy id", http.StatusBadRequest)
+		return
+	}
+	var destFolder string
+	if err = db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", id).Scan(&destFolder); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		Folder string `json:"folder"`
+	}
+	if err = json.NewDecoder(r.Body).Decode(&body); err != nil || !runFolderRe.MatchString(body.Folder) {
+		http.Error(w, "invalid folder name", http.StatusBadRequest)
+		return
+	}
+	fullPath, err := validateCleanupPath(destFolder, body.Folder)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return
+	}
+	freed := calculateDirSize(fullPath)
+	if err = os.RemoveAll(fullPath); err != nil {
+		http.Error(w, "delete failed: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"freed_bytes": freed, "success": true})
+}
+
+// HandleDeleteAllRuns deletes every run folder inside a policy's destination.
+// POST /cron/policies/delete-all-runs/{id}
+func HandleDeleteAllRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, err := extractIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "invalid policy id", http.StatusBadRequest)
+		return
+	}
+	var destFolder string
+	if err = db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", id).Scan(&destFolder); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	cleanDest := filepath.Clean(destFolder)
+	if !strings.HasPrefix(cleanDest, safeRoot) {
+		http.Error(w, "path not allowed", http.StatusForbidden)
+		return
+	}
+	entries, _ := listRunFolders(destFolder)
+	var freed int64
+	deleted := 0
+	for _, e := range entries {
+		full := filepath.Join(cleanDest, e.Name())
+		freed += calculateDirSize(full)
+		os.RemoveAll(full)
+		deleted++
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"freed_bytes": freed, "deleted": deleted, "success": true})
+}
+
+// HandleDeleteOlderThan deletes run folders older than N days.
+// POST /cron/policies/delete-older-than/{id}   body: {"days":30}
+func HandleDeleteOlderThan(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	id, err := extractIDFromPath(r.URL.Path)
+	if err != nil {
+		http.Error(w, "invalid policy id", http.StatusBadRequest)
+		return
+	}
+	var destFolder string
+	if err = db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", id).Scan(&destFolder); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	cleanDest := filepath.Clean(destFolder)
+	if !strings.HasPrefix(cleanDest, safeRoot) {
+		http.Error(w, "path not allowed", http.StatusForbidden)
+		return
+	}
+	var body struct {
+		Days int `json:"days"`
+	}
+	if err = json.NewDecoder(r.Body).Decode(&body); err != nil || body.Days < 1 {
+		http.Error(w, "invalid days value", http.StatusBadRequest)
+		return
+	}
+	cutoff := time.Now().AddDate(0, 0, -body.Days)
+	entries, _ := listRunFolders(destFolder)
+	var freed int64
+	deleted := 0
+	for _, e := range entries {
+		t, parseErr := time.Parse("2006-01-02_15-04-05", e.Name())
+		if parseErr != nil {
+			continue
+		}
+		if t.Before(cutoff) {
+			full := filepath.Join(cleanDest, e.Name())
+			freed += calculateDirSize(full)
+			os.RemoveAll(full)
+			deleted++
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"freed_bytes": freed, "deleted": deleted, "success": true})
 }
