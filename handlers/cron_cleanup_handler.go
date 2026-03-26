@@ -62,21 +62,34 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 	cards := ""
 	for _, p := range infos {
 		runsHTML := ""
+		hasRuns := len(p.Runs) > 0
+		if hasRuns {
+			runsHTML += fmt.Sprintf(`
+			<div style="display:flex;align-items:center;gap:12px;padding:5px 0;border-bottom:2px solid var(--color-border);font-size:12px;color:var(--color-text-subtle);">
+				<input type="checkbox" id="sel-all-%d" title="Select all" style="width:16px;height:16px;cursor:pointer;" onchange="toggleSelectAll(%d,this)">
+				<span style="flex:1;font-weight:600;">Folder</span>
+				<span style="min-width:70px;text-align:right;font-weight:600;">Size</span>
+				<span style="min-width:60px;"></span>
+			</div>`, p.ID, p.ID)
+		}
 		for _, run := range p.Runs {
 			runsHTML += fmt.Sprintf(`
-			<div class="cleanup-run-row" id="run-%d-%s" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);">
+			<div class="cleanup-run-row" id="run-%d-%s" data-policy="%d" data-folder="%s" data-size="%d" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);">
+				<input type="checkbox" class="run-cb run-cb-%d" data-size="%d" style="width:16px;height:16px;cursor:pointer;" onchange="updateSelBar(%d)">
 				<span style="font-size:18px;">&#x1F4C1;</span>
 				<span style="font-family:monospace;font-size:13px;flex:1;">%s</span>
 				<span style="font-size:12px;color:var(--color-text-subtle);min-width:70px;text-align:right;">%s</span>
 				<button onclick="deleteRun(%d,'%s',this)" style="padding:3px 10px;font-size:12px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete</button>
 			</div>`,
 				p.ID, html.EscapeString(run.Name),
+				p.ID, html.EscapeString(run.Name), run.SizeBytes,
+				p.ID, run.SizeBytes, p.ID,
 				html.EscapeString(run.Name),
 				html.EscapeString(fmtBytesCleanup(run.SizeBytes)),
 				p.ID, html.EscapeString(run.Name),
 			)
 		}
-		if runsHTML == "" {
+		if !hasRuns {
 			runsHTML = `<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>`
 		}
 
@@ -87,11 +100,16 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 				<span style="font-size:18px;margin-right:8px;">&#x1F4C1;</span>
 				<span style="font-weight:600;font-size:15px;">Policy: %s</span>
 			</div>
-			<span style="font-size:13px;color:var(--color-text-subtle);">Total: <strong>%s</strong></span>
+			<span style="font-size:13px;color:var(--color-text-subtle);">Total: <strong id="total-size-%d">%s</strong></span>
 		</div>
 		<div style="padding:0 24px 8px;">
 			<div style="font-size:12px;color:var(--color-text-subtle);margin-bottom:12px;font-family:monospace;">%s</div>
 			<div id="runs-%d">%s</div>
+			<div id="sel-bar-%d" style="display:none;margin:10px 0;padding:10px 14px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;display:none;align-items:center;gap:12px;flex-wrap:wrap;">
+				<span id="sel-label-%d" style="font-size:13px;font-weight:600;flex:1;"></span>
+				<button onclick="deleteSelected(%d)" style="padding:5px 14px;font-size:13px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete Selected</button>
+				<button onclick="clearSelection(%d)" style="padding:5px 14px;font-size:13px;background:var(--color-border);color:var(--color-text);border:none;border-radius:4px;cursor:pointer;">&#x2715; Clear</button>
+			</div>
 			<div id="msg-%d" style="margin:8px 0;font-size:13px;display:none;"></div>
 			<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
 				<button onclick="deleteAll(%d)" style="padding:5px 14px;font-size:13px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete All</button>
@@ -104,12 +122,12 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 	</div>`,
 			p.ID,
 			html.EscapeString(p.Name),
-			html.EscapeString(fmtBytesCleanup(p.TotalSizeBytes)),
+			p.ID, html.EscapeString(fmtBytesCleanup(p.TotalSizeBytes)),
 			html.EscapeString(p.DestinationFolder),
 			p.ID, runsHTML,
+			p.ID, p.ID, p.ID, p.ID,
 			p.ID,
-			p.ID,
-			p.ID, p.ID,
+			p.ID, p.ID, p.ID,
 		)
 	}
 
@@ -196,9 +214,66 @@ function showMsg(policyID, msg, ok) {
 	setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
 
+// ── Checkbox selection ────────────────────────────────────────────────────────
+
+function toggleSelectAll(policyID, cb) {
+	document.querySelectorAll('.run-cb-' + policyID).forEach(c => c.checked = cb.checked);
+	updateSelBar(policyID);
+}
+
+function updateSelBar(policyID) {
+	const checked = document.querySelectorAll('.run-cb-' + policyID + ':checked');
+	const bar = document.getElementById('sel-bar-' + policyID);
+	const label = document.getElementById('sel-label-' + policyID);
+	if (!bar) return;
+	if (checked.length === 0) {
+		bar.style.display = 'none';
+		return;
+	}
+	let totalBytes = 0;
+	checked.forEach(c => { totalBytes += parseInt(c.dataset.size || '0', 10); });
+	label.textContent = checked.length + ' run' + (checked.length > 1 ? 's' : '') + ' selected (' + fmtMB(totalBytes) + ')';
+	bar.style.display = 'flex';
+}
+
+function clearSelection(policyID) {
+	document.querySelectorAll('.run-cb-' + policyID).forEach(c => c.checked = false);
+	const selAll = document.getElementById('sel-all-' + policyID);
+	if (selAll) selAll.checked = false;
+	updateSelBar(policyID);
+}
+
+function deleteSelected(policyID) {
+	const checked = document.querySelectorAll('.run-cb-' + policyID + ':checked');
+	if (checked.length === 0) return;
+	const folders = Array.from(checked).map(c => c.closest('.cleanup-run-row').dataset.folder);
+	let totalBytes = 0;
+	checked.forEach(c => { totalBytes += parseInt(c.dataset.size || '0', 10); });
+	if (!confirm('Delete ' + folders.length + ' selected run(s) (' + fmtMB(totalBytes) + ')? This cannot be undone.')) return;
+	fetch('/cron/cleanup/delete-selected', {
+		method: 'POST',
+		headers: {'Content-Type': 'application/json'},
+		body: JSON.stringify({policy_id: policyID, folders: folders})
+	}).then(r => r.json()).then(d => {
+		if (d.success) {
+			(d.deleted || folders).forEach(f => {
+				const row = document.getElementById('run-' + policyID + '-' + f);
+				if (row) row.remove();
+			});
+			clearSelection(policyID);
+			showMsg(policyID, '✓ Deleted ' + (d.deleted ? d.deleted.length : folders.length) + ' run(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
+			checkEmpty(policyID);
+		} else {
+			showMsg(policyID, d.error || 'Delete failed.', false);
+		}
+	}).catch(() => showMsg(policyID, 'Delete failed.', false));
+}
+
+// ── Individual / bulk delete ──────────────────────────────────────────────────
+
 function deleteRun(policyID, folder, btn) {
 	const row = document.getElementById('run-' + policyID + '-' + folder);
-	const sizeEl = row ? row.querySelector('span:nth-child(3)') : null;
+	const sizeEl = row ? row.querySelector('span[style*="color"]') : null;
 	const sizeText = sizeEl ? sizeEl.textContent : '';
 	if (!confirm('Delete backup folder "' + folder + '"? (' + sizeText + ') This cannot be undone.')) return;
 	btn.disabled = true;
@@ -230,6 +305,8 @@ function deleteAll(policyID) {
 		if (d.success) {
 			const runsDiv = document.getElementById('runs-' + policyID);
 			if (runsDiv) runsDiv.innerHTML = '<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>';
+			const bar = document.getElementById('sel-bar-' + policyID);
+			if (bar) bar.style.display = 'none';
 			showMsg(policyID, '✓ Deleted ' + d.count + ' folder(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
 		} else {
 			showMsg(policyID, d.error || 'Delete failed.', false);
@@ -247,13 +324,13 @@ function deleteOlderThan(policyID) {
 		body: JSON.stringify({policy_id: policyID, days: days})
 	}).then(r => r.json()).then(d => {
 		if (d.success) {
-			// Remove deleted rows from DOM
 			if (d.deleted_folders) {
 				d.deleted_folders.forEach(f => {
 					const row = document.getElementById('run-' + policyID + '-' + f);
 					if (row) row.remove();
 				});
 			}
+			clearSelection(policyID);
 			showMsg(policyID, '✓ Deleted ' + d.count + ' folder(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
 			checkEmpty(policyID);
 		} else {
@@ -266,6 +343,8 @@ function checkEmpty(policyID) {
 	const runsDiv = document.getElementById('runs-' + policyID);
 	if (runsDiv && runsDiv.querySelectorAll('.cleanup-run-row').length === 0) {
 		runsDiv.innerHTML = '<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>';
+		const bar = document.getElementById('sel-bar-' + policyID);
+		if (bar) bar.style.display = 'none';
 	}
 }
 </script>`, cards)
@@ -424,6 +503,49 @@ func removeAllSafe(path string) error {
 		return fmt.Errorf("path outside allowed root: %s", clean)
 	}
 	return os.RemoveAll(clean)
+}
+
+// HandleCleanupDeleteSelected handles POST /cron/cleanup/delete-selected
+// Body: {"policy_id": N, "folders": ["2026-03-26_21-37-56", ...]}
+func HandleCleanupDeleteSelected(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		PolicyID int64    `json:"policy_id"`
+		Folders  []string `json:"folders"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Folders) == 0 {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	var destFolder string
+	if err := db.QueryRow("SELECT destination_folder FROM backup_policies WHERE id=?", body.PolicyID).Scan(&destFolder); err != nil {
+		http.Error(w, "policy not found", http.StatusNotFound)
+		return
+	}
+	var freed int64
+	var deleted []string
+	for _, folder := range body.Folders {
+		if !runFolderRe.MatchString(folder) {
+			continue // skip invalid names silently
+		}
+		fullPath, err := validateCleanupPath(destFolder, folder)
+		if err != nil {
+			continue
+		}
+		freed += calculateDirSize(fullPath)
+		if err := os.RemoveAll(fullPath); err == nil {
+			deleted = append(deleted, folder)
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"success":    true,
+		"freed_bytes": freed,
+		"deleted":    deleted,
+	})
 }
 
 // jsonErr writes a JSON error response.

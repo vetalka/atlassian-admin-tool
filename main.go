@@ -281,6 +281,9 @@ func main() {
 	http.Handle("/cron/cleanup/delete-older-than", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleCleanupDeleteOlderThan),
 	)))
+	http.Handle("/cron/cleanup/delete-selected", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCleanupDeleteSelected),
+	)))
 	http.Handle("/cron/policies/delete-run/", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleDeleteRun),
 	)))
