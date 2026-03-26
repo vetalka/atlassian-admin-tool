@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -33,7 +34,7 @@ type RunInfo struct {
 	IsOrphanDB   bool // DB record exists but no folder on disk
 }
 
-func loadPolicyCleanupInfos() []PolicyCleanupInfo {
+func loadPolicyCleanupInfos(ctx context.Context) []PolicyCleanupInfo {
 	rows, err := db.Query("SELECT id, name, destination_folder FROM backup_policies ORDER BY name")
 	if err != nil {
 		return nil
@@ -42,6 +43,9 @@ func loadPolicyCleanupInfos() []PolicyCleanupInfo {
 
 	var infos []PolicyCleanupInfo
 	for rows.Next() {
+		if ctx.Err() != nil {
+			break
+		}
 		var p PolicyCleanupInfo
 		if err := rows.Scan(&p.ID, &p.Name, &p.DestinationFolder); err != nil {
 			continue
@@ -49,11 +53,18 @@ func loadPolicyCleanupInfos() []PolicyCleanupInfo {
 
 		// --- disk folders ---
 		diskFolders := map[string]int64{} // folder→size
-		if entries, err := listRunFolders(p.DestinationFolder); err == nil {
-			for _, e := range entries {
-				full := filepath.Join(p.DestinationFolder, e.Name())
-				diskFolders[e.Name()] = calculateDirSize(full)
+		if _, statErr := os.Stat(p.DestinationFolder); statErr == nil {
+			if entries, err := listRunFolders(p.DestinationFolder); err == nil {
+				for _, e := range entries {
+					if ctx.Err() != nil {
+						break
+					}
+					full := filepath.Join(p.DestinationFolder, e.Name())
+					diskFolders[e.Name()] = calculateDirSize(full)
+				}
 			}
+		} else {
+			log.Printf("loadPolicyCleanupInfos: skipping missing dest folder %q: %v", p.DestinationFolder, statErr)
 		}
 
 		// --- DB records ---
@@ -140,7 +151,27 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 	username, _ := GetCurrentUsername(r)
 	isAdmin, _ := IsAdminUser(username)
 
-	infos := loadPolicyCleanupInfos()
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	type result struct{ infos []PolicyCleanupInfo }
+	ch := make(chan result, 1)
+	go func() {
+		ch <- result{loadPolicyCleanupInfos(ctx)}
+	}()
+
+	var infos []PolicyCleanupInfo
+	select {
+	case res := <-ch:
+		infos = res.infos
+	case <-ctx.Done():
+		log.Printf("HandleShowCleanup: disk scan timed out after 5s, showing partial results")
+		select {
+		case res := <-ch:
+			infos = res.infos
+		default:
+		}
+	}
 
 	cards := ""
 	for _, p := range infos {
