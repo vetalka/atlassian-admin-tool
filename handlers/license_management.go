@@ -138,6 +138,7 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
             <div class="ads-settings-bar">
                 <a href="/settings/users">User management</a>
                 <a href="/settings/updatelicense" class="active">License</a>
+                <a href="/cron/policies">Backup Policies</a>
             </div>
         </div>
         <div class="ads-page-with-sidebar" style="margin-top: 100px;">
@@ -171,6 +172,9 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
                     <a href="/cron/policies" class="ads-sidebar-item" data-full="1">
                         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
                         Backup Policies</a>
+                    <a href="/cron/cleanup" class="ads-sidebar-item" data-full="1">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14H6L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4h6v2"></path></svg>
+                        Cleanup Backups</a>
                 </div>
                 <div class="ads-sidebar-section">
                     <div class="ads-sidebar-section-title">System</div>

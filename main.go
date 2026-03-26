@@ -269,6 +269,18 @@ func main() {
 	http.Handle("/cron/policies/cleanup-info/", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleCleanupInfo),
 	)))
+	http.Handle("/cron/cleanup", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleShowCleanup),
+	)))
+	http.Handle("/cron/cleanup/delete-run", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCleanupDeleteRun),
+	)))
+	http.Handle("/cron/cleanup/delete-all", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCleanupDeleteAll),
+	)))
+	http.Handle("/cron/cleanup/delete-older-than", handlers.SetupMiddleware(handlers.AuthMiddleware(
+		handlers.AdminOnlyMiddleware(handlers.HandleCleanupDeleteOlderThan),
+	)))
 	http.Handle("/cron/policies/delete-run/", handlers.SetupMiddleware(handlers.AuthMiddleware(
 		handlers.AdminOnlyMiddleware(handlers.HandleDeleteRun),
 	)))
