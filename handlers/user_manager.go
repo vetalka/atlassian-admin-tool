@@ -57,7 +57,7 @@ func HandleUserManagement(w http.ResponseWriter, r *http.Request) {
             <div class="ads-settings-bar">
                 <a href="/settings/users" class="active">User management</a>
                 <a href="/settings/updatelicense">License</a>
-                <a href="/cron/policies">Backup Policies</a>
+                <a href="/cron/policies">Backup</a>
             </div>
         </div>
         <div class="ads-page-with-sidebar" style="margin-top: 100px;">

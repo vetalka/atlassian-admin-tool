@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"html"
@@ -14,258 +13,135 @@ import (
 	"time"
 )
 
-// PolicyCleanupInfo holds a policy + its merged disk+DB run list.
-type PolicyCleanupInfo struct {
-	ID                int64
-	Name              string
-	DestinationFolder string
-	TotalSizeBytes    int64
-	Runs              []RunInfo
-}
-
-// RunInfo represents one backup run — from disk, DB, or both.
-type RunInfo struct {
-	RunID        int64  // 0 if no DB record
-	Folder       string // timestamp folder name; empty if orphan DB record with no parseable folder
-	SizeBytes    int64
-	Status       string
-	StartedAt    string
-	ExistsOnDisk bool // folder present on disk
-	IsOrphanDB   bool // DB record exists but no folder on disk
-}
-
-func loadPolicyCleanupInfos(ctx context.Context) []PolicyCleanupInfo {
-	rows, err := db.Query("SELECT id, name, destination_folder FROM backup_policies ORDER BY name")
-	if err != nil {
-		return nil
-	}
-	defer rows.Close()
-
-	var infos []PolicyCleanupInfo
-	for rows.Next() {
-		if ctx.Err() != nil {
-			break
-		}
-		var p PolicyCleanupInfo
-		if err := rows.Scan(&p.ID, &p.Name, &p.DestinationFolder); err != nil {
-			continue
-		}
-
-		// --- disk folders ---
-		// NOTE: No recursive size calculation here — calculateDirSize blocks on NFS/slow paths.
-		// Sizes are shown as "—" on page load; freed bytes are reported by delete handlers.
-		diskFolders := map[string]struct{}{} // folder→present
-		if _, statErr := os.Stat(p.DestinationFolder); statErr == nil {
-			if entries, err := listRunFolders(p.DestinationFolder); err == nil {
-				for _, e := range entries {
-					if ctx.Err() != nil {
-						break
-					}
-					diskFolders[e.Name()] = struct{}{}
-				}
-			}
-		} else {
-			log.Printf("loadPolicyCleanupInfos: skipping missing dest folder %q: %v", p.DestinationFolder, statErr)
-		}
-
-		// --- DB records ---
-		type dbRun struct {
-			id        int64
-			folder    string // extracted from files_created
-			status    string
-			startedAt string
-		}
-		dbRuns := map[string]dbRun{} // folder→record
-		dbRows, err := db.Query(
-			`SELECT id, status, COALESCE(started_at,''), COALESCE(files_created,'[]')
-			 FROM backup_policy_runs WHERE policy_id=? ORDER BY id DESC`, p.ID)
-		if err == nil {
-			defer dbRows.Close()
-			for dbRows.Next() {
-				var rid int64
-				var status, startedAt, filesJSON string
-				dbRows.Scan(&rid, &status, &startedAt, &filesJSON)
-				// extract folder from any path in files_created
-				folder := extractFolderFromFilesJSON(filesJSON, p.DestinationFolder)
-				dbRuns[folder] = dbRun{id: rid, folder: folder, status: status, startedAt: startedAt}
-			}
-		}
-
-		// --- merge ---
-		seen := map[string]bool{}
-
-		// disk-first: folders on disk (matched or unmatched to DB)
-		for folder := range diskFolders {
-			run := RunInfo{Folder: folder, SizeBytes: 0, ExistsOnDisk: true}
-			if rec, ok := dbRuns[folder]; ok {
-				run.RunID = rec.id
-				run.Status = rec.status
-				run.StartedAt = rec.startedAt
-			}
-			p.Runs = append(p.Runs, run)
-			seen[folder] = true
-		}
-
-		// orphan DB records: in DB but no folder on disk
-		for folder, rec := range dbRuns {
-			if seen[folder] {
-				continue
-			}
-			p.Runs = append(p.Runs, RunInfo{
-				RunID:      rec.id,
-				Folder:     folder,
-				Status:     rec.status,
-				StartedAt:  rec.startedAt,
-				IsOrphanDB: true,
-			})
-		}
-
-		// sort newest first by folder name (lexicographic desc = time desc)
-		sortRunInfos(p.Runs)
-		infos = append(infos, p)
-	}
-	return infos
-}
-
-// extractFolderFromFilesJSON finds the timestamp folder name embedded in the
-// files_created JSON array (e.g. ".../2026-03-26_21-37-56/...").
-func extractFolderFromFilesJSON(filesJSON, destFolder string) string {
-	// Look for runFolderRe pattern preceded by a '/'
-	for _, match := range runFolderRe.FindAllString(filesJSON, -1) {
-		return match
-	}
-	return ""
-}
-
-// sortRunInfos sorts runs newest-first by folder name.
-func sortRunInfos(runs []RunInfo) {
-	for i := 1; i < len(runs); i++ {
-		for j := i; j > 0 && runs[j].Folder > runs[j-1].Folder; j-- {
-			runs[j], runs[j-1] = runs[j-1], runs[j]
-		}
-	}
-}
-
-// HandleShowCleanup renders GET /cron/cleanup
+// HandleShowCleanup renders GET /cron/cleanup — DB-only, zero disk access.
 func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 	username, _ := GetCurrentUsername(r)
 	isAdmin, _ := IsAdminUser(username)
 
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-	defer cancel()
+	type runRecord struct {
+		ID        int64
+		StartedAt string
+		Status    string
+		SizeBytes int64
+	}
+	type policyCleanup struct {
+		ID       int64
+		Name     string
+		Records  []runRecord
+		TotalMB  float64
+	}
 
-	type result struct{ infos []PolicyCleanupInfo }
-	ch := make(chan result, 1)
-	go func() {
-		ch <- result{loadPolicyCleanupInfos(ctx)}
-	}()
+	pRows, err := db.Query("SELECT id, name FROM backup_policies ORDER BY name")
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer pRows.Close()
 
-	var infos []PolicyCleanupInfo
-	select {
-	case res := <-ch:
-		infos = res.infos
-	case <-ctx.Done():
-		log.Printf("HandleShowCleanup: disk scan timed out after 5s, showing partial results")
-		select {
-		case res := <-ch:
-			infos = res.infos
-		default:
+	var policies []policyCleanup
+	for pRows.Next() {
+		var p policyCleanup
+		pRows.Scan(&p.ID, &p.Name)
+
+		rRows, err := db.Query(`
+			SELECT id, COALESCE(started_at,''), COALESCE(status,''), COALESCE(backup_size_bytes,0)
+			FROM backup_policy_runs WHERE policy_id=? ORDER BY started_at DESC`, p.ID)
+		if err == nil {
+			for rRows.Next() {
+				var rec runRecord
+				rRows.Scan(&rec.ID, &rec.StartedAt, &rec.Status, &rec.SizeBytes)
+				p.TotalMB += float64(rec.SizeBytes) / 1024 / 1024
+				p.Records = append(p.Records, rec)
+			}
+			rRows.Close()
 		}
+		policies = append(policies, p)
 	}
 
 	cards := ""
-	for _, p := range infos {
-		runsHTML := ""
-		hasRuns := len(p.Runs) > 0
-		if hasRuns {
-			runsHTML += fmt.Sprintf(`
-			<div style="display:flex;align-items:center;gap:12px;padding:5px 0;border-bottom:2px solid var(--color-border);font-size:12px;color:var(--color-text-subtle);">
-				<input type="checkbox" id="sel-all-%d" title="Select all" style="width:16px;height:16px;cursor:pointer;" onchange="toggleSelectAll(%d,this)">
-				<span style="flex:1;font-weight:600;">Folder</span>
-				<span style="min-width:70px;text-align:right;font-weight:600;">Size</span>
-				<span style="min-width:60px;"></span>
-			</div>`, p.ID, p.ID)
-		}
-		for _, run := range p.Runs {
-			if run.IsOrphanDB {
-				// Orphan: DB record exists but no folder on disk
-				label := run.Folder
-				if label == "" {
-					label = fmt.Sprintf("run #%d", run.RunID)
-				}
-				runsHTML += fmt.Sprintf(`
-			<div class="cleanup-run-row" id="run-%d-%d" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);opacity:0.6;">
-				<input type="checkbox" style="width:16px;height:16px;opacity:0.3;" disabled>
-				<span style="font-size:18px;">&#x26A0;&#xFE0F;</span>
-				<span style="font-family:monospace;font-size:13px;flex:1;font-style:italic;color:var(--color-text-subtle);">%s <span style="font-size:11px;">(files missing from disk)</span></span>
-				<button onclick="deleteRecordOnly(%d,%d,this)" style="padding:3px 10px;font-size:12px;background:#6B778C;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Remove Record</button>
-			</div>`,
-					p.ID, run.RunID,
-					html.EscapeString(label),
-					run.RunID, p.ID,
-				)
-			} else {
-				// Normal: folder exists on disk
-				runsHTML += fmt.Sprintf(`
-			<div class="cleanup-run-row" id="run-%d-%s" data-policy="%d" data-folder="%s" data-size="%d" style="display:flex;align-items:center;gap:12px;padding:6px 0;border-bottom:1px solid var(--color-border);">
-				<input type="checkbox" class="run-cb run-cb-%d" data-size="%d" style="width:16px;height:16px;cursor:pointer;" onchange="updateSelBar(%d)">
-				<span style="font-size:18px;">&#x1F4C1;</span>
-				<span style="font-family:monospace;font-size:13px;flex:1;">%s</span>
-				<span style="font-size:12px;color:var(--color-text-subtle);min-width:70px;text-align:right;">%s</span>
-				<button onclick="deleteRun(%d,'%s',this)" style="padding:3px 10px;font-size:12px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete</button>
-			</div>`,
-					p.ID, html.EscapeString(run.Folder),
-					p.ID, html.EscapeString(run.Folder), run.SizeBytes,
-					p.ID, run.SizeBytes, p.ID,
-					html.EscapeString(run.Folder),
-					html.EscapeString(fmtBytesCleanup(run.SizeBytes)),
-					p.ID, html.EscapeString(run.Folder),
-				)
+	for _, p := range policies {
+		rowsHTML := ""
+		for _, rec := range p.Records {
+			started := rec.StartedAt
+			if len(started) > 16 {
+				started = started[:16]
 			}
+			sizeStr := "—"
+			if rec.SizeBytes > 0 {
+				sizeStr = fmtBytesCleanup(rec.SizeBytes)
+			}
+			statusColor := map[string]string{
+				"success": "#00875A", "failed": "#DE350B",
+				"partial": "#FF991F", "running": "#0052CC",
+			}
+			sc := statusColor[rec.Status]
+			if sc == "" {
+				sc = "#97A0AF"
+			}
+			statusBadge := fmt.Sprintf(
+				`<span style="display:inline-block;padding:2px 8px;border-radius:12px;background:%s;color:#fff;font-size:11px;font-weight:600;">%s</span>`,
+				sc, html.EscapeString(strings.ToUpper(rec.Status)),
+			)
+			rowsHTML += fmt.Sprintf(`
+		<tr id="rec-%d-%d">
+			<td style="font-family:monospace;font-size:12px;">#%d</td>
+			<td style="font-size:12px;">%s</td>
+			<td>%s</td>
+			<td style="font-size:12px;">%s</td>
+			<td>
+				<button onclick="deleteRecord(%d,%d,this)"
+					style="padding:3px 10px;font-size:12px;background:#6B778C;color:#fff;border:none;border-radius:4px;cursor:pointer;">
+					&#x1F5D1; Delete Record
+				</button>
+			</td>
+		</tr>`,
+				p.ID, rec.ID,
+				rec.ID,
+				html.EscapeString(started),
+				statusBadge,
+				html.EscapeString(sizeStr),
+				rec.ID, p.ID,
+			)
 		}
-		if !hasRuns {
-			runsHTML = `<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>`
+		if rowsHTML == "" {
+			rowsHTML = `<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-subtle);">No run records.</td></tr>`
 		}
 
+		totalStr := fmt.Sprintf("%.1f MB", p.TotalMB)
+		if p.TotalMB == 0 {
+			totalStr = "—"
+		}
 		cards += fmt.Sprintf(`
-	<div class="ads-card-flat" style="margin-bottom:24px;" id="policy-card-%d">
-		<div class="ads-card-header" style="justify-content:space-between;">
-			<div>
-				<span style="font-size:18px;margin-right:8px;">&#x1F4C1;</span>
-				<span style="font-weight:600;font-size:15px;">Policy: %s</span>
-			</div>
-			<div style="display:flex;align-items:center;gap:12px;">
-				<span style="font-size:13px;color:var(--color-text-subtle);">Total: <strong id="total-size-%d">%s</strong></span>
-				<button onclick="clearAllRecords(%d)" style="padding:3px 10px;font-size:12px;background:var(--color-border);color:var(--color-text);border:none;border-radius:4px;cursor:pointer;" title="Delete all DB records for this policy (files stay on disk)">&#x1F5D1; Clear All Records</button>
-			</div>
+<div class="ads-card-flat" style="margin-bottom:24px;" id="policy-card-%d">
+	<div class="ads-card-header" style="justify-content:space-between;">
+		<span style="font-weight:600;font-size:15px;">%s</span>
+		<div style="display:flex;align-items:center;gap:12px;">
+			<span style="font-size:13px;color:var(--color-text-subtle);">Total recorded: <strong>%s</strong></span>
+			<button onclick="deleteAllRecords(%d,this)"
+				style="padding:3px 12px;font-size:12px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">
+				&#x1F5D1; Delete All Records
+			</button>
 		</div>
-		<div style="padding:0 24px 8px;">
-			<div style="font-size:12px;color:var(--color-text-subtle);margin-bottom:12px;font-family:monospace;">%s</div>
-			<div id="runs-%d">%s</div>
-			<div id="sel-bar-%d" style="display:none;margin:10px 0;padding:10px 14px;background:var(--color-bg);border:1px solid var(--color-border);border-radius:6px;display:none;align-items:center;gap:12px;flex-wrap:wrap;">
-				<span id="sel-label-%d" style="font-size:13px;font-weight:600;flex:1;"></span>
-				<button onclick="deleteSelected(%d)" style="padding:5px 14px;font-size:13px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete Selected</button>
-				<button onclick="clearSelection(%d)" style="padding:5px 14px;font-size:13px;background:var(--color-border);color:var(--color-text);border:none;border-radius:4px;cursor:pointer;">&#x2715; Clear</button>
-			</div>
-			<div id="msg-%d" style="margin:8px 0;font-size:13px;display:none;"></div>
-			<div style="display:flex;gap:10px;align-items:center;margin-top:14px;flex-wrap:wrap;">
-				<button onclick="deleteAll(%d)" style="padding:5px 14px;font-size:13px;background:#DE350B;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F5D1; Delete All</button>
-				<label style="font-size:13px;color:var(--color-text-subtle);">Delete older than</label>
-				<input id="days-%d" type="number" value="30" min="1" style="width:60px;padding:4px 8px;border:1px solid var(--color-border);border-radius:4px;background:var(--color-bg);color:var(--color-text);font-size:13px;">
-				<span style="font-size:13px;color:var(--color-text-subtle);">days</span>
-				<button onclick="deleteOlderThan(%d)" style="padding:5px 14px;font-size:13px;background:#FF991F;color:#fff;border:none;border-radius:4px;cursor:pointer;">&#x1F9F9; Clean Now</button>
-			</div>
+	</div>
+	<div style="padding:0 24px 16px;">
+		<div id="msg-%d" style="margin:8px 0;font-size:13px;display:none;"></div>
+		<div style="overflow-x:auto;">
+		<table class="ads-table" id="tbl-%d">
+			<thead><tr>
+				<th>Run #</th><th>Started</th><th>Status</th><th>Size</th><th>Actions</th>
+			</tr></thead>
+			<tbody>%s</tbody>
+		</table>
 		</div>
-	</div>`,
+	</div>
+</div>`,
 			p.ID,
 			html.EscapeString(p.Name),
-			p.ID, html.EscapeString(fmtBytesCleanup(p.TotalSizeBytes)),
-			p.ID, // clearAllRecords
-			html.EscapeString(p.DestinationFolder),
-			p.ID, runsHTML,
-			p.ID, p.ID, p.ID, p.ID,
+			html.EscapeString(totalStr),
 			p.ID,
-			p.ID, p.ID, p.ID,
+			p.ID,
+			p.ID,
+			rowsHTML,
 		)
 	}
 
@@ -278,8 +154,7 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 	<div class="ads-settings-bar">
 		<a href="/settings/users">User management</a>
 		<a href="/settings/updatelicense">License</a>
-		<a href="/cron/policies">Backup Policies</a>
-		<a href="/cron/cleanup" class="active">Cleanup Backups</a>
+		<a href="/cron/policies">Backup</a>
 	</div>
 </div>
 <div class="ads-page-with-sidebar" style="margin-top: 100px;">
@@ -328,21 +203,13 @@ func HandleShowCleanup(w http.ResponseWriter, r *http.Request) {
 		<div class="ads-page-centered"><div class="ads-page-content">
 			<div class="ads-page-header">
 				<h1>Cleanup Backups</h1>
-				<p class="ads-page-header-description">Manage and delete backup files from scheduled backup policies.</p>
+				<p class="ads-page-header-description">View and delete backup run records. Use backup policies page to manage schedules.</p>
 			</div>
 			%s
 		</div></div>
 	</div>
 </div>
 <script>
-function fmtMB(bytes) {
-	if (!bytes) return '0 B';
-	if (bytes > 1073741824) return (bytes/1073741824).toFixed(1) + ' GB';
-	if (bytes > 1048576)    return (bytes/1048576).toFixed(1) + ' MB';
-	if (bytes > 1024)       return (bytes/1024).toFixed(1) + ' KB';
-	return bytes + ' B';
-}
-
 function showMsg(policyID, msg, ok) {
 	const el = document.getElementById('msg-' + policyID);
 	if (!el) return;
@@ -352,164 +219,8 @@ function showMsg(policyID, msg, ok) {
 	setTimeout(() => { el.style.display = 'none'; }, 5000);
 }
 
-// ── Checkbox selection ────────────────────────────────────────────────────────
-
-function toggleSelectAll(policyID, cb) {
-	document.querySelectorAll('.run-cb-' + policyID).forEach(c => c.checked = cb.checked);
-	updateSelBar(policyID);
-}
-
-function updateSelBar(policyID) {
-	const checked = document.querySelectorAll('.run-cb-' + policyID + ':checked');
-	const bar = document.getElementById('sel-bar-' + policyID);
-	const label = document.getElementById('sel-label-' + policyID);
-	if (!bar) return;
-	if (checked.length === 0) {
-		bar.style.display = 'none';
-		return;
-	}
-	let totalBytes = 0;
-	checked.forEach(c => { totalBytes += parseInt(c.dataset.size || '0', 10); });
-	label.textContent = checked.length + ' run' + (checked.length > 1 ? 's' : '') + ' selected (' + fmtMB(totalBytes) + ')';
-	bar.style.display = 'flex';
-}
-
-function clearSelection(policyID) {
-	document.querySelectorAll('.run-cb-' + policyID).forEach(c => c.checked = false);
-	const selAll = document.getElementById('sel-all-' + policyID);
-	if (selAll) selAll.checked = false;
-	updateSelBar(policyID);
-}
-
-function deleteSelected(policyID) {
-	const checked = document.querySelectorAll('.run-cb-' + policyID + ':checked');
-	if (checked.length === 0) return;
-	const folders = Array.from(checked).map(c => c.closest('.cleanup-run-row').dataset.folder);
-	let totalBytes = 0;
-	checked.forEach(c => { totalBytes += parseInt(c.dataset.size || '0', 10); });
-	if (!confirm('Delete ' + folders.length + ' selected run(s) (' + fmtMB(totalBytes) + ')? This cannot be undone.')) return;
-	fetch('/cron/cleanup/delete-selected', {
-		method: 'POST',
-		headers: {'Content-Type': 'application/json'},
-		body: JSON.stringify({policy_id: policyID, folders: folders})
-	}).then(r => r.json()).then(d => {
-		if (d.success) {
-			(d.deleted || folders).forEach(f => {
-				const row = document.getElementById('run-' + policyID + '-' + f);
-				if (row) row.remove();
-			});
-			clearSelection(policyID);
-			showMsg(policyID, '✓ Deleted ' + (d.deleted ? d.deleted.length : folders.length) + ' run(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
-			checkEmpty(policyID);
-		} else {
-			showMsg(policyID, d.error || 'Delete failed.', false);
-		}
-	}).catch(() => showMsg(policyID, 'Delete failed.', false));
-}
-
-// ── Individual / bulk delete ──────────────────────────────────────────────────
-
-function deleteRun(policyID, folder, btn) {
-	const row = document.getElementById('run-' + policyID + '-' + folder);
-	const sizeEl = row ? row.querySelector('span[style*="color"]') : null;
-	const sizeText = sizeEl ? sizeEl.textContent : '';
-	if (!confirm('Delete backup folder "' + folder + '"? (' + sizeText + ') This cannot be undone.')) return;
-	btn.disabled = true;
-	fetch('/cron/cleanup/delete-run', {
-		method: 'POST',
-		headers: {'Content-Type': 'application/json'},
-		body: JSON.stringify({policy_id: policyID, folder: folder})
-	}).then(r => r.json()).then(d => {
-		if (d.success) {
-			if (row) row.remove();
-			showMsg(policyID, '✓ Deleted. Freed ' + fmtMB(d.freed_bytes) + '.', true);
-			checkEmpty(policyID);
-		} else {
-			showMsg(policyID, d.error || 'Delete failed.', false);
-			btn.disabled = false;
-		}
-	}).catch(() => { showMsg(policyID, 'Delete failed.', false); btn.disabled = false; });
-}
-
-async function deleteAll(policyID) {
-	const btn = event.target;
-	const name = document.querySelector('#policy-card-' + policyID + ' .ads-card-header span:nth-child(2)');
-	const label = name ? name.textContent.replace('Policy: ','') : 'this policy';
-	if (!confirm('Delete ALL backup runs and DB records for policy "' + label + '"? This cannot be undone.')) return;
-	btn.disabled = true;
-	btn.textContent = 'Deleting...';
-	try {
-		const resp = await fetch('/cron/cleanup/delete-all', {
-			method: 'POST',
-			headers: {'Content-Type': 'application/json'},
-			body: JSON.stringify({policy_id: policyID})
-		});
-		const d = await resp.json();
-		if (d.success) {
-			// Remove ALL run rows (disk + orphan DB records)
-			const runsDiv = document.getElementById('runs-' + policyID);
-			if (runsDiv) runsDiv.innerHTML = '<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>';
-			const bar = document.getElementById('sel-bar-' + policyID);
-			if (bar) bar.style.display = 'none';
-			const totalEl = document.getElementById('total-size-' + policyID);
-			if (totalEl) totalEl.textContent = '0 B';
-			showToast('✓ Deleted ' + d.count + ' folder(s), ' + d.records + ' record(s). Freed ' + fmtMB(d.freed_bytes) + '.');
-		} else {
-			showToast('Error: ' + (d.error || 'unknown'), 'error');
-		}
-	} catch(e) {
-		showToast('Network error: ' + e.message, 'error');
-	} finally {
-		btn.disabled = false;
-		btn.textContent = '\uD83D\uDDD1 Delete All';
-	}
-}
-
-function showToast(msg, type) {
-	const t = document.createElement('div');
-	t.style.cssText = 'position:fixed;bottom:20px;right:20px;padding:12px 20px;background:' +
-		(type==='error'?'#DE350B':'#00875A') + ';color:#fff;border-radius:6px;z-index:9999;font-size:14px;box-shadow:0 2px 8px rgba(0,0,0,.3);';
-	t.textContent = msg;
-	document.body.appendChild(t);
-	setTimeout(() => t.remove(), 4000);
-}
-
-function deleteOlderThan(policyID) {
-	const days = parseInt(document.getElementById('days-' + policyID).value, 10);
-	if (!days || days < 1) { showMsg(policyID, 'Enter a valid number of days.', false); return; }
-	if (!confirm('Delete all backups older than ' + days + ' days for this policy? This cannot be undone.')) return;
-	fetch('/cron/cleanup/delete-older-than', {
-		method: 'POST',
-		headers: {'Content-Type': 'application/json'},
-		body: JSON.stringify({policy_id: policyID, days: days})
-	}).then(r => r.json()).then(d => {
-		if (d.success) {
-			if (d.deleted_folders) {
-				d.deleted_folders.forEach(f => {
-					const row = document.getElementById('run-' + policyID + '-' + f);
-					if (row) row.remove();
-				});
-			}
-			clearSelection(policyID);
-			showMsg(policyID, '✓ Deleted ' + d.count + ' folder(s). Freed ' + fmtMB(d.freed_bytes) + '.', true);
-			checkEmpty(policyID);
-		} else {
-			showMsg(policyID, d.error || 'Delete failed.', false);
-		}
-	}).catch(() => showMsg(policyID, 'Delete failed.', false));
-}
-
-function checkEmpty(policyID) {
-	const runsDiv = document.getElementById('runs-' + policyID);
-	if (runsDiv && runsDiv.querySelectorAll('.cleanup-run-row').length === 0) {
-		runsDiv.innerHTML = '<div style="padding:12px 0;color:var(--color-text-subtle);font-size:13px;">No backup runs on disk.</div>';
-		const bar = document.getElementById('sel-bar-' + policyID);
-		if (bar) bar.style.display = 'none';
-	}
-}
-
-function deleteRecordOnly(runID, policyID, btn) {
-	if (!confirm('Remove this DB record? The backup files (if any) are NOT deleted.')) return;
+function deleteRecord(runID, policyID, btn) {
+	if (!confirm('Delete this run record from DB? This cannot be undone.')) return;
 	btn.disabled = true;
 	fetch('/cron/cleanup/delete-record-only', {
 		method: 'POST',
@@ -517,10 +228,9 @@ function deleteRecordOnly(runID, policyID, btn) {
 		body: JSON.stringify({run_id: runID})
 	}).then(r => r.json()).then(d => {
 		if (d.success) {
-			const row = document.getElementById('run-' + policyID + '-' + runID);
+			const row = document.getElementById('rec-' + policyID + '-' + runID);
 			if (row) row.remove();
-			showMsg(policyID, '✓ Record removed.', true);
-			checkEmpty(policyID);
+			showMsg(policyID, '✓ Record deleted.', true);
 		} else {
 			showMsg(policyID, d.error || 'Failed.', false);
 			btn.disabled = false;
@@ -528,23 +238,23 @@ function deleteRecordOnly(runID, policyID, btn) {
 	}).catch(() => { showMsg(policyID, 'Failed.', false); btn.disabled = false; });
 }
 
-function clearAllRecords(policyID) {
-	if (!confirm('Delete ALL run records from DB for this policy? Files on disk are NOT deleted.')) return;
+function deleteAllRecords(policyID, btn) {
+	if (!confirm('Delete ALL run records for this policy from DB? This cannot be undone.')) return;
+	btn.disabled = true;
 	fetch('/cron/cleanup/clear-all-records', {
 		method: 'POST',
 		headers: {'Content-Type': 'application/json'},
 		body: JSON.stringify({policy_id: policyID})
 	}).then(r => r.json()).then(d => {
 		if (d.success) {
-			// Remove all orphan rows; disk rows stay but lose their run IDs
-			document.querySelectorAll('#runs-' + policyID + ' .cleanup-run-row').forEach(row => {
-				if (row.id.match(/^run-\d+-\d+$/)) row.remove(); // orphan rows have numeric run IDs
-			});
-			showMsg(policyID, '✓ Cleared ' + d.deleted + ' record(s) from DB.', true);
+			const tbody = document.querySelector('#tbl-' + policyID + ' tbody');
+			if (tbody) tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;padding:24px;color:var(--color-text-subtle);">No run records.</td></tr>';
+			showMsg(policyID, '✓ Deleted ' + d.deleted + ' record(s).', true);
 		} else {
 			showMsg(policyID, d.error || 'Failed.', false);
+			btn.disabled = false;
 		}
-	}).catch(() => showMsg(policyID, 'Failed.', false));
+	}).catch(() => { showMsg(policyID, 'Failed.', false); btn.disabled = false; });
 }
 </script>`, cards)
 

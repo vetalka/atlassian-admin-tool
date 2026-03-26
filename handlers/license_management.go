@@ -138,7 +138,7 @@ func displayLicenseForm(w http.ResponseWriter, r *http.Request) {
             <div class="ads-settings-bar">
                 <a href="/settings/users">User management</a>
                 <a href="/settings/updatelicense" class="active">License</a>
-                <a href="/cron/policies">Backup Policies</a>
+                <a href="/cron/policies">Backup</a>
             </div>
         </div>
         <div class="ads-page-with-sidebar" style="margin-top: 100px;">
