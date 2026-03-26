@@ -323,13 +323,16 @@ func HandleListPolicies(w http.ResponseWriter, r *http.Request) {
 				User Directories</a>
 		</div>
 		<div class="ads-sidebar-section">
+			<div class="ads-sidebar-section-title">Backup</div>
+			<a href="/cron/policies" class="ads-sidebar-item active" data-full="1">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+				Backup Policies</a>
+		</div>
+		<div class="ads-sidebar-section">
 			<div class="ads-sidebar-section-title">System</div>
 			<a href="/settings/updatelicense" class="ads-sidebar-item">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.78 7.78 5.5 5.5 0 0 1 7.78-7.78zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path></svg>
 				License</a>
-			<a href="/cron/policies" class="ads-sidebar-item active" data-full="1">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
-				Backup Policies</a>
 		</div>
 	</div>
 	<div class="ads-main-content">
